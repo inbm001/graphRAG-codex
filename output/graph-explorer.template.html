@@ -1,0 +1,155 @@
+<div id="kg-explorer">
+  <h2>질문으로 따라가는 지식그래프</h2>
+  <div class="text-small">현재 PDF · 추출 데이터 269개 노드 / 345개 관계 · 질문에 필요한 부분 그래프</div>
+  <div class="viz-controls">
+    <label class="form-label">보기<select class="form-select" id="kg-view"><option value="budget">② 예산 상세</option><option value="structure">① 조직·사업</option><option value="semantic">③ 의미 분류 · 제안</option></select></label>
+    <label class="form-label">예시 질문<select class="form-select" id="kg-question"></select></label>
+  </div>
+  <div class="viz-row"><button type="button" class="btn" id="kg-prev">이전 단계</button><button type="button" class="btn btn-primary" id="kg-next">다음 단계</button><button type="button" class="btn" id="kg-all">전체 경로</button><span id="kg-step" aria-live="polite"></span></div>
+  <div id="kg-current" aria-live="polite"></div>
+  <div class="kg-legend text-small"><span>● 강조: 현재까지 조회한 노드</span><span>━━ 강조: 조회한 관계</span><span>┄┄ 점선: 제안한 의미 분류</span></div>
+  <div id="kg-canvas"></div>
+  <div id="kg-answer" class="card" aria-live="polite"></div>
+  <details><summary>근거·계산 확인</summary><div id="kg-evidence"></div></details>
+  <div class="text-small">실제 추출값으로 구성한 조회 시연 · Neo4j/LLM 실행 이력 아님 · ③은 추가 제안 분류</div>
+</div>
+<style>
+#kg-explorer{display:grid;gap:calc(var(--font-size-base)*1);color:var(--foreground)}
+#kg-explorer .kg-legend{display:flex;gap:16px;flex-wrap:wrap}
+#kg-explorer #kg-canvas{position:relative;min-width:0}
+#kg-explorer .kg-grid{position:relative;display:grid;gap:76px;padding:16px 4px}
+#kg-explorer .kg-level{display:flex;justify-content:center;gap:24px;flex-wrap:wrap}
+#kg-explorer .kg-node{position:relative;z-index:1;flex:1 1 130px;max-width:250px;min-width:0;overflow-wrap:anywhere;display:grid;align-content:center;gap:6px;padding:12px;background:var(--background);border:1px solid var(--border);border-radius:10px;text-align:left;color:var(--foreground);font:inherit;min-height:88px}
+#kg-explorer .kg-node.kg-active{background:color-mix(in srgb,var(--viz-series-1) 14%,var(--background));border:2px solid var(--viz-series-1)}
+#kg-explorer .kg-node.kg-selected{outline:2px solid var(--foreground);outline-offset:3px}
+#kg-explorer .kg-type{font-weight:500}
+#kg-explorer .kg-edge-layer{position:absolute;inset:0;overflow:visible;pointer-events:none;width:100%;height:100%}
+#kg-explorer .kg-edge{fill:none;stroke:var(--border);stroke-width:1.5}
+#kg-explorer .kg-edge.kg-active{stroke:var(--viz-series-1);stroke-width:3}
+#kg-explorer .kg-edge.kg-semantic{stroke-dasharray:6 4}
+#kg-explorer .kg-edge-label{position:absolute;z-index:2;transform:translate(-50%,-50%);background:var(--background);padding:2px 5px;color:var(--foreground);white-space:nowrap}
+#kg-explorer #kg-answer{display:grid;gap:8px}
+#kg-explorer #kg-evidence{display:grid;gap:8px;padding-top:8px}
+@media(max-width:520px){#kg-explorer .kg-level{gap:10px;flex-wrap:nowrap}#kg-explorer .kg-node{flex-basis:0;padding:8px}#kg-explorer .kg-edge-label{white-space:normal;max-width:95px;text-align:center}}
+</style>
+<script>
+(()=>{
+const graph=__GRAPH_DATA__;
+const root=document.getElementById('kg-explorer');
+const el=id=>root.querySelector('#kg-'+id);
+const byId=new Map(graph.nodes.map(n=>[n.id,n]));
+const outgoing=(id,type)=>graph.relationships.filter(e=>e.source===id&&e.type===type).map(e=>byId.get(e.target));
+const incoming=(id,type)=>graph.relationships.filter(e=>e.target===id&&e.type===type).map(e=>byId.get(e.source));
+const project=name=>graph.nodes.find(n=>n.label==='Project'&&n.name===name);
+const budget=(p,y)=>outgoing(p.id,'HAS_BUDGET').find(n=>n.year===y);
+const fmt=n=>n.toLocaleString('ko-KR');
+const safe=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const allowance=project('서울 청년수당');
+const mind=project('청년 마음건강 지원');
+const finance=project('청년 미래투자 금융 지원');
+const source=n=>({id:'source-'+n.id,name:`PDF ${n.pdf_page}쪽 / 인쇄 ${n.printed_page}쪽`,label:'Source',pdf_page:n.pdf_page,printed_page:n.printed_page});
+const relation=(a,b,label,semantic=false)=>({source:a.id,target:b.id,label,semantic});
+let state={view:'budget',question:'amount',step:0};
+const saved=window.openai?.widgetState?.privateContent;
+if(saved&&['budget','structure','semantic'].includes(saved.view))state={...state,...saved};
+let model;
+const questions={budget:[['amount','청년수당의 2026년 예산은?'],['change','마음건강 지원 예산은 얼마나 줄었나?'],['breakdown','청년수당 예산은 어떻게 구성되나?']],structure:[['owner','청년수당은 어느 부서·정책 소관인가?']],semantic:[['meaning','수당 지급과 이자 지원 사업을 함께 찾으면?']]};
+function build(){
+ let ns=[],es=[],steps=[],answer='',evidence='';
+ const add=(n)=>{if(!ns.some(x=>x.id===n.id))ns.push(n);return n};
+ const connect=(a,b,label,semantic=false)=>{add(a);add(b);es.push(relation(a,b,label,semantic));return es.length-1};
+ const stage=(text,ids,ei)=>steps.push({text,ids:ids.map(n=>n.id),edges:ei});
+ if(state.question==='amount'){
+  const b=budget(allowance,2026),s=source(b),other=budget(allowance,2025);
+  connect(allowance,b,'연도별 예산');connect(b,s,'원문 근거');connect(allowance,other,'연도별 예산');
+  stage('사업명으로 서울 청년수당을 찾습니다.',[allowance],[]);
+  stage('연도 조건 2026으로 예산 기록을 선택합니다.',[b],[0]);
+  stage('금액·단위를 읽고 원문 위치를 확인합니다.',[s],[1]);
+  answer=`2026년 서울 청년수당 사업 예산은 ${fmt(b.amount)}천원, 즉 ${fmt(b.amount_krw/1e8)}억원입니다.`;
+  evidence=`2025년 기록(${fmt(other.amount)}천원)은 연도 조건에서 제외합니다. 근거: PDF ${b.pdf_page}쪽 / 인쇄 ${b.printed_page}쪽.`;
+ }else if(state.question==='change'){
+  const a=budget(mind,2025),b=budget(mind,2026),s=source(b);connect(mind,a,'2025년 예산');connect(mind,b,'2026년 예산');connect(b,s,'원문 근거');
+  stage('청년 마음건강 지원 사업을 찾습니다.',[mind],[]);
+  stage('2025년과 2026년 예산을 함께 조회합니다.',[a,b],[0,1]);
+  stage('차액과 감소율을 계산하고 출처를 확인합니다.',[s],[2]);
+  const diff=a.amount-b.amount;
+  answer=`${fmt(diff)}천원 감소했습니다. 전년 대비 감소율은 ${(diff/a.amount*100).toFixed(2)}%입니다.`;
+  evidence=`${fmt(a.amount)} − ${fmt(b.amount)} = ${fmt(diff)}천원. 감소율 = 감소액 ÷ 2025년 예산 × 100. 근거: PDF ${b.pdf_page}쪽 / 인쇄 ${b.printed_page}쪽. 감소 원인은 이 계산으로 알 수 없습니다.`;
+ }else if(state.question==='breakdown'){
+  const b=budget(allowance,2026),expenses=outgoing(b.id,'HAS_EXPENSE'),items=expenses.flatMap(e=>outgoing(e.id,'HAS_LINE_ITEM'));
+  connect(allowance,b,'연도별 예산');expenses.forEach(e=>connect(b,e,'과목별 배정'));expenses.forEach(e=>outgoing(e.id,'HAS_LINE_ITEM').forEach(i=>connect(e,i,'산출내역')));
+  stage('청년수당의 2026년 사업 총액을 조회합니다.',[allowance,b],[0]);
+  stage('총액을 구성하는 예산과목을 펼칩니다.',expenses,expenses.map((_,i)=>i+1));
+  stage('과목별 산출내역을 확인해 합계를 검산합니다.',items,es.map((_,i)=>i).filter(i=>i>expenses.length));
+  answer=`총 ${fmt(b.amount)}천원 = `+expenses.map(e=>`${e.name} ${fmt(e.amount)}천원`).join(' + ')+'.';
+  evidence=items.map(i=>`${i.name}: ${fmt(i.amount)}천원 · PDF ${i.pdf_page}쪽`).join('<br>')+'<br>상위 총액과 하위 내역을 함께 합산하지 않습니다.';
+ }else if(state.question==='owner'){
+  const u=incoming(allowance.id,'HAS_PROJECT')[0],p=incoming(u.id,'HAS_UNIT')[0],d=incoming(p.id,'HAS_POLICY')[0],o=incoming(d.id,'HAS_DEPARTMENT')[0];
+  connect(o,d,'하위 부서');connect(d,p,'소관 정책');connect(p,u,'하위 단위사업');connect(u,allowance,'하위 세부사업');
+  stage('서울 청년수당 사업을 찾습니다.',[allowance],[]);
+  stage('상위 단위사업과 정책을 역방향으로 조회합니다.',[u,p],[3,2]);
+  stage('정책의 소관 부서와 상위 기관을 확인합니다.',[d,o],[1,0]);
+  answer=`서울 청년수당은 ${d.name} 소관이며, “${p.name}” 정책 아래 “${u.name}” 단위사업에 속합니다.`;
+  evidence=`사업: PDF ${allowance.pdf_page}쪽. 단위사업: PDF ${u.pdf_page}쪽. 부서·정책: PDF ${d.pdf_page}쪽. 소관은 직접 운영기관을 뜻하지 않습니다. 화살표는 문서 계층 방향이며 조회는 역방향으로 진행합니다.`;
+ }else{
+  const topic={id:'topic',name:'경제·재정 지원',label:'ProposedCategory'},pay={id:'pay',name:'수당 지급',label:'ProposedCategory'},interest={id:'interest',name:'이자 지원',label:'ProposedCategory'};
+  const a=outgoing(budget(allowance,2026).id,'HAS_EXPENSE').flatMap(e=>outgoing(e.id,'HAS_LINE_ITEM')).find(n=>n.name==='청년수당 지급');
+  const f=outgoing(budget(finance,2026).id,'HAS_EXPENSE').flatMap(e=>outgoing(e.id,'HAS_LINE_ITEM')).find(n=>n.name==='학자금 대출이자 지원');
+  connect(topic,allowance,'제안 분류',true);connect(topic,finance,'제안 분류',true);connect(allowance,pay,'지원방식 분류',true);connect(finance,interest,'지원방식 분류',true);connect(allowance,a,'산출내역 경로 요약');connect(finance,f,'산출내역 경로 요약');
+  stage('“경제·재정 지원”이라는 제안 분류에서 시작합니다.',[topic],[]);
+  stage('분류에 연결한 두 사업과 지원 방식을 찾습니다.',[allowance,finance,pay,interest],[0,1,2,3]);
+  stage('분류의 근거가 되는 원문 산출내역을 확인합니다.',[a,f],[4,5]);
+  answer='예시로 서울 청년수당(수당 지급)과 청년 미래투자 금융 지원(이자 지원)을 함께 찾습니다. 전체 재정 지원 사업을 망라한 결과는 아닙니다.';
+  evidence=`분류 관계는 제안입니다. 원문 근거: “${a.name}” PDF ${a.pdf_page}쪽, “${f.name}” PDF ${f.pdf_page}쪽. 실선의 ‘경로 요약’은 사업 → 예산 → 과목 → 산출내역 연결을 축약한 표시입니다.`;
+ }
+ return {nodes:ns,edges:es,steps,answer,evidence};
+}
+const typeNames={Project:'사업',BudgetAllocation:'연도별 예산',ExpenseAllocation:'과목별 배정',LineItem:'산출내역',Organization:'기관',Department:'부서',Policy:'정책',UnitProgram:'단위사업',Source:'원문 위치',ProposedCategory:'제안 분류'};
+function save(){window.openai?.setWidgetState?.({modelContent:{view:state.view,question:questions[state.view].find(q=>q[0]===state.question)?.[1],step:state.step+1},privateContent:state})?.catch(()=>{});}
+function render(){
+ model=build();state.step=Math.max(0,Math.min(state.step,model.steps.length-1));
+ const activeN=new Set(model.steps.slice(0,state.step+1).flatMap(s=>s.ids)),activeE=new Set(model.steps.slice(0,state.step+1).flatMap(s=>s.edges));
+ el('step').textContent=`${state.step+1} / ${model.steps.length} 단계`;
+ el('current').textContent=model.steps[state.step].text;
+ el('prev').disabled=state.step===0;el('next').disabled=state.step===model.steps.length-1;
+ const depths=new Map(model.nodes.map(n=>[n.id,0]));
+ for(let k=0;k<model.nodes.length;k++)for(const e of model.edges)depths.set(e.target,Math.max(depths.get(e.target),depths.get(e.source)+1));
+ const levels=Array.from(new Set(depths.values())).sort((a,b)=>a-b);
+ el('canvas').innerHTML='<svg class="kg-edge-layer" aria-hidden="true"></svg><div class="kg-grid">'+levels.map(d=>'<div class="kg-level">'+model.nodes.filter(n=>depths.get(n.id)===d).map(n=>`<button type="button" class="kg-node cursor-interaction ${activeN.has(n.id)?'kg-active':''}" data-node="${n.id}" aria-label="${safe(n.name)} 상세"><span class="text-small kg-type">${activeN.has(n.id)?'● ':''}${typeNames[n.label]||n.label}</span><span>${safe(n.label==='BudgetAllocation'?n.year+'년 예산':n.name)}</span>${n.amount!==undefined?`<span class="tabular-nums">${fmt(n.amount)}천원</span>`:''}</button>`).join('')+'</div>').join('')+'</div>';
+ el('answer').innerHTML=`<strong>${state.step===model.steps.length-1?'답변':'답변 구성 중'}</strong><span>${state.step===model.steps.length-1?safe(model.answer):'다음 단계에서 연결된 기록과 근거를 확인합니다.'}</span>`;
+ el('evidence').innerHTML=model.evidence;
+ el('canvas').querySelectorAll('[data-node]').forEach(b=>b.onclick=()=>{
+  el('canvas').querySelectorAll('.kg-selected').forEach(x=>x.classList.remove('kg-selected'));b.classList.add('kg-selected');
+  const n=model.nodes.find(n=>n.id===b.dataset.node);
+  el('current').textContent=`${typeNames[n.label]} · ${n.name}${n.pdf_page?' · PDF '+n.pdf_page+'쪽 / 인쇄 '+n.printed_page+'쪽':''}${n.label==='ProposedCategory'?' · 원문 사실과 구분한 제안':''}`;
+ });
+ drawEdges(activeE);
+}
+function drawEdges(activeE){
+ const c=el('canvas'),svg=c.querySelector('svg');if(!svg)return;
+ c.querySelectorAll('.kg-edge-label').forEach(x=>x.remove());
+ const rect=c.getBoundingClientRect();svg.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);svg.innerHTML='<defs><marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--viz-series-1)"/></marker></defs>';
+ model.edges.forEach((e,i)=>{
+  const aa=c.querySelector(`[data-node="${e.source}"]`).getBoundingClientRect(),bb=c.querySelector(`[data-node="${e.target}"]`).getBoundingClientRect();
+  let x1=aa.left-rect.left+aa.width/2,y1=aa.bottom-rect.top,x2=bb.left-rect.left+bb.width/2,y2=bb.top-rect.top;
+  const sameRow=Math.abs(aa.top-bb.top)<10;
+  if(sameRow){x1=aa.right-rect.left;y1=aa.top-rect.top+aa.height/2;x2=bb.left-rect.left;y2=bb.top-rect.top+bb.height/2;}
+  const mid=(y1+y2)/2;
+  const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+  path.setAttribute('d',sameRow?`M${x1},${y1} L${x2},${y2}`:`M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`);
+  path.setAttribute('class',`kg-edge ${activeE.has(i)?'kg-active':''} ${e.semantic?'kg-semantic':''}`);if(activeE.has(i))path.setAttribute('marker-end','url(#kg-arrow)');svg.append(path);
+  const label=document.createElement('span');label.className='kg-edge-label text-small';label.style.left=((x1+x2)/2)+'px';label.style.top=((y1+y2)/2+(sameRow?-22:0))+'px';label.textContent=(activeE.has(i)?'● ':'')+e.label;c.append(label);
+ });
+}
+function setQuestions(){
+ const qs=questions[state.view];if(!qs.some(q=>q[0]===state.question))state.question=qs[0][0];
+ el('view').value=state.view;el('question').innerHTML=qs.map(q=>`<option value="${q[0]}">${q[1]}</option>`).join('');el('question').value=state.question;
+}
+el('view').onchange=()=>{state.view=el('view').value;state.step=0;setQuestions();render();save()};
+el('question').onchange=()=>{state.question=el('question').value;state.step=0;render();save()};
+el('prev').onclick=()=>{state.step--;render();save()};el('next').onclick=()=>{state.step++;render();save()};el('all').onclick=()=>{state.step=model.steps.length-1;render();save()};
+new ResizeObserver(()=>{if(model)drawEdges(new Set(model.steps.slice(0,state.step+1).flatMap(s=>s.edges)))}).observe(el('canvas'));
+window.addEventListener('openai:set_globals',e=>{const s=e.detail?.globals?.widgetState?.privateContent;if(s&&questions[s.view]){state={...state,...s};setQuestions();render()}});
+setQuestions();render();
+})();
+</script>

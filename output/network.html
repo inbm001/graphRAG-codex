@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>전체 지식그래프 · 미래청년기획관</title>
+<link rel="stylesheet" href="network.css">
+</head>
+<body>
+<header>
+  <div><h1>미래청년기획관</h1><span class="subtitle">전체 지식그래프</span></div>
+  <nav aria-label="그래프 보기"><a href="network.html" aria-current="page">전체 연결망</a><a href="graph-explorer.html">질문 단계별 보기</a></nav>
+  <button id="panel-toggle" aria-expanded="false" aria-controls="controls">검색·필터</button>
+</header>
+<main>
+  <aside id="controls">
+    <section><label for="search">노드 검색</label><input id="search" type="search" placeholder="사업명, 예산과목, 산출내역…" autocomplete="off"><div id="search-results" aria-live="polite"></div></section>
+    <section><h2>노드 유형</h2><div id="types"></div><button class="quiet" id="show-all">모든 유형 표시</button></section>
+    <section><h2>예시 질문으로 경로 찾기</h2><label class="sr-only" for="question">예시 질문</label><select id="question"><option value="">전체 연결망 탐색</option><option value="amount">청년수당의 2026년 예산은?</option><option value="change">마음건강 예산은 얼마나 줄었나?</option><option value="breakdown">청년수당 예산의 지출 구성은?</option><option value="owner">청년수당은 어느 부서 소관인가?</option></select><div class="step-controls"><button id="previous" disabled>이전</button><button id="next" disabled>다음 단계</button><button id="all-path" disabled>전체 경로</button></div><p id="question-step">질문을 고르면 전체 그래프 안에서 조회 경로가 강조됩니다.</p></section>
+    <section class="source-note"><h2>표시 범위</h2><p>PDF 5–14쪽 상세표에서 추출한 조직·사업·예산·산출내역 전체. 269개 노드, 345개 관계.</p><p>의미 분류와 PDF의 인력·임무 등 미추출 정보는 포함하지 않습니다.</p><p>실제 추출 데이터의 조회 시연이며 Neo4j·LLM 실행 이력은 아닙니다.</p></section>
+  </aside>
+  <section id="graph-area" aria-label="전체 연결망">
+    <canvas id="graph" aria-label="269개 노드와 345개 관계로 구성된 연결망. 왼쪽 검색이나 하단 노드 목록으로 노드를 선택할 수 있습니다."></canvas>
+    <div class="graph-meta"><span id="counts" aria-live="polite">데이터 불러오는 중…</span><span id="layout-state">연결망 배치 중</span></div>
+    <div class="graph-tools"><button id="fit">전체 맞춤</button><button id="zoom-out" aria-label="축소">−</button><output id="zoom-value">100%</output><button id="zoom-in" aria-label="확대">+</button><label><input type="checkbox" id="labels"> 모든 이름</label></div>
+    <div id="hover" hidden></div>
+    <div id="answer" hidden aria-live="polite"></div>
+    <div class="canvas-help">휠로 확대 · 빈 공간을 드래그해 이동 · 노드를 드래그해 배치 · 클릭해 연결 확인</div>
+    <div id="error" role="alert" hidden></div>
+  </section>
+  <aside id="detail"><h2>연결을 따라 탐색하세요</h2><p>점을 누르면 해당 노드와 직접 연결된 노드가 강조됩니다.</p><p>검색 결과나 아래 노드 목록에서도 선택할 수 있습니다.</p><details id="node-list"><summary>전체 노드 목록 <span id="list-count"></span></summary><div id="accessible-nodes"></div></details></aside>
+</main>
+<script src="network.js"></script>
+</body></html>

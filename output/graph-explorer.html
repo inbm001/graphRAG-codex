@@ -1,0 +1,5800 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GraphRAG · 질문과 근거 경로</title><style>
+:root{color-scheme:light;--font-size-base:15px;--foreground:#162f38;--background:#fff;--border:#cbd6db;--viz-series-1:#087f6c;font-family:"Segoe UI",sans-serif;color:var(--foreground);background:#f3f6f7}
+*{box-sizing:border-box}body{margin:0;padding:32px 20px}main{max-width:1080px;margin:auto;background:#fff;padding:32px;border-radius:18px}h2{margin:0;font-size:24px}button,select{font:inherit}button{cursor:pointer}button:disabled{cursor:default;opacity:.45}.text-small{font-size:13px}.viz-controls,.viz-row{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.form-label{display:grid;gap:7px;max-width:100%}.form-select{padding:10px;border:1px solid #cbd6db;border-radius:7px;max-width:100%;background:#fff;color:#162f38}.btn{padding:9px 14px;border:1px solid #bdcccf;border-radius:7px;background:#fff;color:#162f38}.btn-primary{background:#162f38;color:#fff}.card{padding:18px;background:#f0f7f5;border-radius:9px;line-height:1.7}summary{cursor:pointer;padding:8px 0}#kg-current{padding:12px 0;font-weight:500}#kg-explorer .kg-node:hover{box-shadow:0 0 0 2px #92b9ae}.tabular-nums{font-variant-numeric:tabular-nums}@media(max-width:550px){body{padding:10px}main{padding:16px}h2{font-size:21px}}
+</style></head><body><main><div id="kg-explorer">
+  <div><a href="network.html" style="display:inline-block;padding:10px 14px;border-radius:6px;background:#162f38;color:#fff;text-decoration:none">전체 연결망 열기 · Obsidian 방식</a></div><h2>질문으로 따라가는 지식그래프</h2>
+  <div class="text-small">현재 PDF · 추출 데이터 269개 노드 / 345개 관계 · 질문에 필요한 부분 그래프</div>
+  <div class="viz-controls">
+    <label class="form-label">보기<select class="form-select" id="kg-view"><option value="budget">② 예산 상세</option><option value="structure">① 조직·사업</option><option value="semantic">③ 의미 분류 · 제안</option></select></label>
+    <label class="form-label">예시 질문<select class="form-select" id="kg-question"></select></label>
+  </div>
+  <div class="viz-row"><button type="button" class="btn" id="kg-prev">이전 단계</button><button type="button" class="btn btn-primary" id="kg-next">다음 단계</button><button type="button" class="btn" id="kg-all">전체 경로</button><span id="kg-step" aria-live="polite"></span></div>
+  <div id="kg-current" aria-live="polite"></div>
+  <div class="kg-legend text-small"><span>● 강조: 현재까지 조회한 노드</span><span>━━ 강조: 조회한 관계</span><span>┄┄ 점선: 제안한 의미 분류</span></div>
+  <div id="kg-canvas"></div>
+  <div id="kg-answer" class="card" aria-live="polite"></div>
+  <details><summary>근거·계산 확인</summary><div id="kg-evidence"></div></details>
+  <div class="text-small">실제 추출값으로 구성한 조회 시연 · Neo4j/LLM 실행 이력 아님 · ③은 추가 제안 분류</div>
+</div>
+<style>
+#kg-explorer{display:grid;gap:calc(var(--font-size-base)*1);color:var(--foreground)}
+#kg-explorer .kg-legend{display:flex;gap:16px;flex-wrap:wrap}
+#kg-explorer #kg-canvas{position:relative;min-width:0}
+#kg-explorer .kg-grid{position:relative;display:grid;gap:76px;padding:16px 4px}
+#kg-explorer .kg-level{display:flex;justify-content:center;gap:24px;flex-wrap:wrap}
+#kg-explorer .kg-node{position:relative;z-index:1;flex:1 1 130px;max-width:250px;min-width:0;overflow-wrap:anywhere;display:grid;align-content:center;gap:6px;padding:12px;background:var(--background);border:1px solid var(--border);border-radius:10px;text-align:left;color:var(--foreground);font:inherit;min-height:88px}
+#kg-explorer .kg-node.kg-active{background:color-mix(in srgb,var(--viz-series-1) 14%,var(--background));border:2px solid var(--viz-series-1)}
+#kg-explorer .kg-node.kg-selected{outline:2px solid var(--foreground);outline-offset:3px}
+#kg-explorer .kg-type{font-weight:500}
+#kg-explorer .kg-edge-layer{position:absolute;inset:0;overflow:visible;pointer-events:none;width:100%;height:100%}
+#kg-explorer .kg-edge{fill:none;stroke:var(--border);stroke-width:1.5}
+#kg-explorer .kg-edge.kg-active{stroke:var(--viz-series-1);stroke-width:3}
+#kg-explorer .kg-edge.kg-semantic{stroke-dasharray:6 4}
+#kg-explorer .kg-edge-label{position:absolute;z-index:2;transform:translate(-50%,-50%);background:var(--background);padding:2px 5px;color:var(--foreground);white-space:nowrap}
+#kg-explorer #kg-answer{display:grid;gap:8px}
+#kg-explorer #kg-evidence{display:grid;gap:8px;padding-top:8px}
+@media(max-width:520px){#kg-explorer .kg-level{gap:10px;flex-wrap:nowrap}#kg-explorer .kg-node{flex-basis:0;padding:8px}#kg-explorer .kg-edge-label{white-space:normal;max-width:95px;text-align:center}}
+</style>
+<script>
+(()=>{
+const graph={
+  "schema_version": "budget-v1",
+  "status": "draft_document_specific",
+  "scope": "Detailed project budgets and expense breakdowns, PDF pages 5-14. Aggregate overview amounts and semantic classifications excluded.",
+  "nodes": [
+    {
+      "id": "n1",
+      "label": "Organization",
+      "name": "미래청년기획관",
+      "pdf_page": 3,
+      "printed_page": 311
+    },
+    {
+      "id": "n2",
+      "label": "Document",
+      "name": "01-미래청년기획관.pdf",
+      "pdf_page": 1,
+      "printed_page": 309
+    },
+    {
+      "id": "n3",
+      "label": "Department",
+      "name": "청년정책담당관",
+      "pdf_page": 5,
+      "printed_page": 313
+    },
+    {
+      "id": "n4",
+      "label": "Policy",
+      "name": "청년의 삶의 질 획기적 개선",
+      "pdf_page": 5,
+      "printed_page": 313
+    },
+    {
+      "id": "n5",
+      "label": "UnitProgram",
+      "name": "민관협력 기반 세대균형 시정 구현",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "account": "일반회계"
+    },
+    {
+      "id": "n6",
+      "label": "Project",
+      "name": "청년 정책 추진을 위한 민관협력",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "account": "일반회계"
+    },
+    {
+      "id": "n7",
+      "label": "BudgetAllocation",
+      "name": "청년 정책 추진을 위한 민관협력 / 2025",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2025,
+      "amount": 780716,
+      "unit": "천원",
+      "amount_krw": 780716000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n8",
+      "label": "BudgetAllocation",
+      "name": "청년 정책 추진을 위한 민관협력 / 2026",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 874946,
+      "unit": "천원",
+      "amount_krw": 874946000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n9",
+      "label": "ExpenseAllocation",
+      "name": "기간제근로자등보수",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "code": "100-101-04",
+      "year": 2026,
+      "amount": 8146,
+      "unit": "천원"
+    },
+    {
+      "id": "n10",
+      "label": "LineItem",
+      "name": "초단시간 근로자 보수",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 8146,
+      "unit": "천원",
+      "raw_text": "ㅇ 초단시간 근로자 보수 8,146,000원 = 8,146"
+    },
+    {
+      "id": "n11",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 548000,
+      "unit": "천원"
+    },
+    {
+      "id": "n12",
+      "label": "LineItem",
+      "name": "청년정책 소통 활성화",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 510000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년정책 소통 활성화 510,000,000원 = 510,000"
+    },
+    {
+      "id": "n13",
+      "label": "LineItem",
+      "name": "청년정책 간담회 등",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 23000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년정책 간담회 등 23,000,000원 = 23,000"
+    },
+    {
+      "id": "n14",
+      "label": "LineItem",
+      "name": "청년정책위원회 등 운영",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 15000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년정책위원회 등 운영 15,000,000원 = 15,000"
+    },
+    {
+      "id": "n15",
+      "label": "ExpenseAllocation",
+      "name": "국외업무여비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "code": "100-202-03",
+      "year": 2026,
+      "amount": 20000,
+      "unit": "천원"
+    },
+    {
+      "id": "n16",
+      "label": "LineItem",
+      "name": "청년정책 국제교류 추진",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 20000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년정책 국제교류 추진 20,000,000원 = 20,000"
+    },
+    {
+      "id": "n17",
+      "label": "ExpenseAllocation",
+      "name": "시책추진업무추진비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "code": "100-203-03",
+      "year": 2026,
+      "amount": 20000,
+      "unit": "천원"
+    },
+    {
+      "id": "n18",
+      "label": "LineItem",
+      "name": "시책추진업무추진비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 20000,
+      "unit": "천원",
+      "raw_text": "ㅇ 시책추진업무추진비 20,000,000원 = 20,000"
+    },
+    {
+      "id": "n19",
+      "label": "ExpenseAllocation",
+      "name": "특정업무경비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "code": "100-204-02",
+      "year": 2026,
+      "amount": 28800,
+      "unit": "천원"
+    },
+    {
+      "id": "n20",
+      "label": "LineItem",
+      "name": "미래청년기획관 특정업무경비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 28800,
+      "unit": "천원",
+      "raw_text": "ㅇ 미래청년기획관 특정업무경비 28,800,000원 = 28,800"
+    },
+    {
+      "id": "n21",
+      "label": "ExpenseAllocation",
+      "name": "연구용역비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "code": "100-207-01",
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원"
+    },
+    {
+      "id": "n22",
+      "label": "LineItem",
+      "name": "인지도 조사 및 정책 설계",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 인지도 조사 및 정책 설계 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n23",
+      "label": "ExpenseAllocation",
+      "name": "공기관등에대한경상적위탁사업비",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "code": "100-308-13",
+      "year": 2026,
+      "amount": 200000,
+      "unit": "천원"
+    },
+    {
+      "id": "n24",
+      "label": "LineItem",
+      "name": "청년정책 방송매체 홍보",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년정책 방송매체 홍보 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n25",
+      "label": "LineItem",
+      "name": "청년정책 언론매체 홍보",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년정책 언론매체 홍보 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n26",
+      "label": "LineItem",
+      "name": "뉴미디어 홍보",
+      "pdf_page": 5,
+      "printed_page": 313,
+      "year": 2026,
+      "amount": 100000,
+      "unit": "천원",
+      "raw_text": "ㅇ 뉴미디어 홍보 100,000,000원 = 100,000"
+    },
+    {
+      "id": "n27",
+      "label": "Project",
+      "name": "청년참여 활성화 및 서울청년참여기구 운영 지원",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "account": "일반회계"
+    },
+    {
+      "id": "n28",
+      "label": "BudgetAllocation",
+      "name": "청년참여 활성화 및 서울청년참여기구 운영 지원 / 2025",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2025,
+      "amount": 389000,
+      "unit": "천원",
+      "amount_krw": 389000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n29",
+      "label": "BudgetAllocation",
+      "name": "청년참여 활성화 및 서울청년참여기구 운영 지원 / 2026",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 392610,
+      "unit": "천원",
+      "amount_krw": 392610000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n30",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 382610,
+      "unit": "천원"
+    },
+    {
+      "id": "n31",
+      "label": "LineItem",
+      "name": "청년참여활성화 및 서울청년참여기구 운영",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 382610,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년참여활성화 및 서울청년참여기구 운영 382,610,000원 = 382,610"
+    },
+    {
+      "id": "n32",
+      "label": "ExpenseAllocation",
+      "name": "시책추진업무추진비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-203-03",
+      "year": 2026,
+      "amount": 10000,
+      "unit": "천원"
+    },
+    {
+      "id": "n33",
+      "label": "LineItem",
+      "name": "시책추진업무추진비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 10000,
+      "unit": "천원",
+      "raw_text": "ㅇ 시책추진업무추진비 10,000,000원 = 10,000"
+    },
+    {
+      "id": "n34",
+      "label": "Project",
+      "name": "청년의 날 및 청년 주간 운영",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "account": "일반회계"
+    },
+    {
+      "id": "n35",
+      "label": "BudgetAllocation",
+      "name": "청년의 날 및 청년 주간 운영 / 2025",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2025,
+      "amount": 155760,
+      "unit": "천원",
+      "amount_krw": 155760000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n36",
+      "label": "BudgetAllocation",
+      "name": "청년의 날 및 청년 주간 운영 / 2026",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 252880,
+      "unit": "천원",
+      "amount_krw": 252880000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n37",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 2880,
+      "unit": "천원"
+    },
+    {
+      "id": "n38",
+      "label": "LineItem",
+      "name": "행사차출경비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 2880,
+      "unit": "천원",
+      "raw_text": "ㅇ 행사차출경비 2,880,000원 = 2,880"
+    },
+    {
+      "id": "n39",
+      "label": "ExpenseAllocation",
+      "name": "행사운영비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-201-03",
+      "year": 2026,
+      "amount": 150000,
+      "unit": "천원"
+    },
+    {
+      "id": "n40",
+      "label": "LineItem",
+      "name": "청년의 날 및 청년 주간 운영",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 150000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년의 날 및 청년 주간 운영 150,000,000원 = 150,000"
+    },
+    {
+      "id": "n41",
+      "label": "ExpenseAllocation",
+      "name": "자치단체경상보조금",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-308-01",
+      "year": 2026,
+      "amount": 100000,
+      "unit": "천원"
+    },
+    {
+      "id": "n42",
+      "label": "LineItem",
+      "name": "청년 네트워크 페스티벌",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 100000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년 네트워크 페스티벌 100,000,000원 = 100,000"
+    },
+    {
+      "id": "n43",
+      "label": "Project",
+      "name": "서울청년참여기구 총회 개최",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "account": "일반회계"
+    },
+    {
+      "id": "n44",
+      "label": "BudgetAllocation",
+      "name": "서울청년참여기구 총회 개최 / 2025",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2025,
+      "amount": 50000,
+      "unit": "천원",
+      "amount_krw": 50000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n45",
+      "label": "BudgetAllocation",
+      "name": "서울청년참여기구 총회 개최 / 2026",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 40000,
+      "unit": "천원",
+      "amount_krw": 40000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n46",
+      "label": "ExpenseAllocation",
+      "name": "행사운영비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-201-03",
+      "year": 2026,
+      "amount": 40000,
+      "unit": "천원"
+    },
+    {
+      "id": "n47",
+      "label": "LineItem",
+      "name": "서울청년참여기구 총회 행사 전반운영",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 30000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울청년참여기구 총회 행사 전반운영 30,000,000원 = 30,000"
+    },
+    {
+      "id": "n48",
+      "label": "LineItem",
+      "name": "행사 참여수당 및 진행비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 10000,
+      "unit": "천원",
+      "raw_text": "ㅇ 행사 참여수당 및 진행비 10,000,000원 = 10,000"
+    },
+    {
+      "id": "n49",
+      "label": "Project",
+      "name": "청년 친화도시 조성",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "account": "일반회계"
+    },
+    {
+      "id": "n50",
+      "label": "BudgetAllocation",
+      "name": "청년 친화도시 조성 / 2025",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2025,
+      "amount": 375000,
+      "unit": "천원",
+      "amount_krw": 375000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n51",
+      "label": "BudgetAllocation",
+      "name": "청년 친화도시 조성 / 2026",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 375000,
+      "unit": "천원",
+      "amount_krw": 375000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n52",
+      "label": "ExpenseAllocation",
+      "name": "자치단체경상보조금",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-308-01",
+      "year": 2026,
+      "amount": 375000,
+      "unit": "천원"
+    },
+    {
+      "id": "n53",
+      "label": "LineItem",
+      "name": "청년 친화도시 조성 사업비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 375000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년 친화도시 조성 사업비 375,000,000원 = (X250,000) 375,000"
+    },
+    {
+      "id": "n54",
+      "label": "Project",
+      "name": "로컬청년성장허브",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "account": "일반회계"
+    },
+    {
+      "id": "n55",
+      "label": "BudgetAllocation",
+      "name": "로컬청년성장허브 / 2025",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2025,
+      "amount": 0,
+      "unit": "천원",
+      "amount_krw": 0,
+      "account": "일반회계"
+    },
+    {
+      "id": "n56",
+      "label": "BudgetAllocation",
+      "name": "로컬청년성장허브 / 2026",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "amount_krw": 50000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n57",
+      "label": "ExpenseAllocation",
+      "name": "공기관등에대한경상적위탁사업비",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "code": "100-308-13",
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원"
+    },
+    {
+      "id": "n58",
+      "label": "LineItem",
+      "name": "로컬청년성장허브",
+      "pdf_page": 6,
+      "printed_page": 314,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 로컬청년성장허브 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n59",
+      "label": "UnitProgram",
+      "name": "청년의 역량 개발 및 성장 기반 확립",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "account": "일반회계"
+    },
+    {
+      "id": "n60",
+      "label": "Project",
+      "name": "청년 몽땅 정보통 운영",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "account": "일반회계"
+    },
+    {
+      "id": "n61",
+      "label": "BudgetAllocation",
+      "name": "청년 몽땅 정보통 운영 / 2025",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2025,
+      "amount": 605317,
+      "unit": "천원",
+      "amount_krw": 605317000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n62",
+      "label": "BudgetAllocation",
+      "name": "청년 몽땅 정보통 운영 / 2026",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 511727,
+      "unit": "천원",
+      "amount_krw": 511727000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n63",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 3000,
+      "unit": "천원"
+    },
+    {
+      "id": "n64",
+      "label": "LineItem",
+      "name": "청년 몽땅 정보통 제안평가위원회 수당",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 1600,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년 몽땅 정보통 제안평가위원회 수당 1,600,000원 = 1,600"
+    },
+    {
+      "id": "n65",
+      "label": "LineItem",
+      "name": "청년지원 CRM 제안평가위원회 수당",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 1400,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년지원 CRM 제안평가위원회 수당 1,400,000원 = 1,400"
+    },
+    {
+      "id": "n66",
+      "label": "ExpenseAllocation",
+      "name": "공공운영비",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "code": "100-201-02",
+      "year": 2026,
+      "amount": 458727,
+      "unit": "천원"
+    },
+    {
+      "id": "n67",
+      "label": "LineItem",
+      "name": "청년지원 CRM 정책 문자발송(장문)",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 18700,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년지원 CRM 정책 문자발송(장문) 18,700,000원 = 18,700"
+    },
+    {
+      "id": "n68",
+      "label": "LineItem",
+      "name": "청년지원 CRM 정책 문자발송(단문)",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 576,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년지원 CRM 정책 문자발송(단문) 576,000원 = 576"
+    },
+    {
+      "id": "n69",
+      "label": "LineItem",
+      "name": "청년지원 CRM 알림톡(사업신청,선정)",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 13300,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년지원 CRM 알림톡(사업신청,선정) 13,300,000원 = 13,300"
+    },
+    {
+      "id": "n70",
+      "label": "LineItem",
+      "name": "서울시 대표 홈페이지(청년몽땅정보통) 회원가입 본인확인 서 비스",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 20130,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울시 대표 홈페이지(청년몽땅정보통) 회원가입 본인확인 서 비스 20,130,000원 = 20,130"
+    },
+    {
+      "id": "n71",
+      "label": "LineItem",
+      "name": "청년몽땅정보통 운영 및 유지관리",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 268200,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년몽땅정보통 운영 및 유지관리 268,200,000원 = 268,200"
+    },
+    {
+      "id": "n72",
+      "label": "LineItem",
+      "name": "청년지원정보시스템(청년지원CRM) 운영",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년지원정보시스템(청년지원CRM) 운영 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n73",
+      "label": "LineItem",
+      "name": "서버용 소프트웨어 유지관리(16종)",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 67821,
+      "unit": "천원",
+      "raw_text": "ㅇ 서버용 소프트웨어 유지관리(16종) 67,821,000원 = 67,821"
+    },
+    {
+      "id": "n74",
+      "label": "LineItem",
+      "name": "청년몽땅정보통 OS변경에 따른 서버이전",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 20000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년몽땅정보통 OS변경에 따른 서버이전 20,000,000원 = 20,000"
+    },
+    {
+      "id": "n75",
+      "label": "ExpenseAllocation",
+      "name": "공기관등에대한경상적위탁사업비",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "code": "100-308-13",
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원"
+    },
+    {
+      "id": "n76",
+      "label": "LineItem",
+      "name": "언론매체 홍보",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 언론매체 홍보 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n77",
+      "label": "Project",
+      "name": "청년 인생설계 학교",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "account": "일반회계"
+    },
+    {
+      "id": "n78",
+      "label": "BudgetAllocation",
+      "name": "청년 인생설계 학교 / 2025",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2025,
+      "amount": 1170504,
+      "unit": "천원",
+      "amount_krw": 1170504000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n79",
+      "label": "BudgetAllocation",
+      "name": "청년 인생설계 학교 / 2026",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 1190500,
+      "unit": "천원",
+      "amount_krw": 1190500000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n80",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 1170500,
+      "unit": "천원"
+    },
+    {
+      "id": "n81",
+      "label": "LineItem",
+      "name": "사업 추진 관련 회의 운영비 등",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 3200,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업 추진 관련 회의 운영비 등 3,200,000원 = 3,200"
+    },
+    {
+      "id": "n82",
+      "label": "LineItem",
+      "name": "청년인생설계학교 운영",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 1167300,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년인생설계학교 운영 1,167,300,000원 = 1,167,300"
+    },
+    {
+      "id": "n83",
+      "label": "ExpenseAllocation",
+      "name": "공기관등에대한경상적위탁사업비",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "code": "100-308-13",
+      "year": 2026,
+      "amount": 20000,
+      "unit": "천원"
+    },
+    {
+      "id": "n84",
+      "label": "LineItem",
+      "name": "언론매체 홍보",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 20000,
+      "unit": "천원",
+      "raw_text": "ㅇ 언론매체 홍보 20,000,000원 = 20,000"
+    },
+    {
+      "id": "n85",
+      "label": "Project",
+      "name": "서울영커리언스",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "account": "일반회계"
+    },
+    {
+      "id": "n86",
+      "label": "BudgetAllocation",
+      "name": "서울영커리언스 / 2025",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2025,
+      "amount": 0,
+      "unit": "천원",
+      "amount_krw": 0,
+      "account": "일반회계"
+    },
+    {
+      "id": "n87",
+      "label": "BudgetAllocation",
+      "name": "서울영커리언스 / 2026",
+      "pdf_page": 7,
+      "printed_page": 315,
+      "year": 2026,
+      "amount": 15676800,
+      "unit": "천원",
+      "amount_krw": 15676800000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n88",
+      "label": "ExpenseAllocation",
+      "name": "기간제근로자등보수",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-101-04",
+      "year": 2026,
+      "amount": 8434000,
+      "unit": "천원"
+    },
+    {
+      "id": "n89",
+      "label": "LineItem",
+      "name": "서울영커리언스 점프업",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 8434000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영커리언스 점프업 8,434,000,000원 = 8,434,000"
+    },
+    {
+      "id": "n90",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 1600000,
+      "unit": "천원"
+    },
+    {
+      "id": "n91",
+      "label": "LineItem",
+      "name": "서울영커리언스 캠프",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 400000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영커리언스 캠프 400,000,000원 = 400,000"
+    },
+    {
+      "id": "n92",
+      "label": "LineItem",
+      "name": "서울영커리언스 챌린지",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 300000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영커리언스 챌린지 300,000,000원 = 300,000"
+    },
+    {
+      "id": "n93",
+      "label": "LineItem",
+      "name": "서울영커리언스 점프업",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 900000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영커리언스 점프업 900,000,000원 = 900,000"
+    },
+    {
+      "id": "n94",
+      "label": "ExpenseAllocation",
+      "name": "공기관등에대한경상적위탁사업비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-308-13",
+      "year": 2026,
+      "amount": 5642800,
+      "unit": "천원"
+    },
+    {
+      "id": "n95",
+      "label": "LineItem",
+      "name": "서울영커리언스 인턴십",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 5592800,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영커리언스 인턴십 5,592,800,000원 = 5,592,800"
+    },
+    {
+      "id": "n96",
+      "label": "LineItem",
+      "name": "언론매체 홍보",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 언론매체 홍보 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n97",
+      "label": "Project",
+      "name": "서울청년 서울생활 꿀팁",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "account": "일반회계"
+    },
+    {
+      "id": "n98",
+      "label": "BudgetAllocation",
+      "name": "서울청년 서울생활 꿀팁 / 2025",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2025,
+      "amount": 0,
+      "unit": "천원",
+      "amount_krw": 0,
+      "account": "일반회계"
+    },
+    {
+      "id": "n99",
+      "label": "BudgetAllocation",
+      "name": "서울청년 서울생활 꿀팁 / 2026",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 203000,
+      "unit": "천원",
+      "amount_krw": 203000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n100",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 203000,
+      "unit": "천원"
+    },
+    {
+      "id": "n101",
+      "label": "LineItem",
+      "name": "사업추진 관련 회의 운영비 등",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 3000,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업추진 관련 회의 운영비 등 3,000,000원 = 3,000"
+    },
+    {
+      "id": "n102",
+      "label": "LineItem",
+      "name": "서울생활꿀팁 콘텐츠 제작, 특강 및 설명회 운영",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 200000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울생활꿀팁 콘텐츠 제작, 특강 및 설명회 운영 200,000,000원 = 200,000"
+    },
+    {
+      "id": "n103",
+      "label": "UnitProgram",
+      "name": "청년 교류 및 협력 강화",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "account": "일반회계"
+    },
+    {
+      "id": "n104",
+      "label": "Project",
+      "name": "서울시 청년해외봉사단",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "account": "일반회계"
+    },
+    {
+      "id": "n105",
+      "label": "BudgetAllocation",
+      "name": "서울시 청년해외봉사단 / 2025",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2025,
+      "amount": 1080000,
+      "unit": "천원",
+      "amount_krw": 1080000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n106",
+      "label": "BudgetAllocation",
+      "name": "서울시 청년해외봉사단 / 2026",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 1023000,
+      "unit": "천원",
+      "amount_krw": 1023000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n107",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 968000,
+      "unit": "천원"
+    },
+    {
+      "id": "n108",
+      "label": "LineItem",
+      "name": "사업 추진 관련 심사비 등",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 5000,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업 추진 관련 심사비 등 5,000,000원 = 5,000"
+    },
+    {
+      "id": "n109",
+      "label": "LineItem",
+      "name": "사업 운영기관 용역비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 963000,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업 운영기관 용역비 963,000,000원 = 963,000"
+    },
+    {
+      "id": "n110",
+      "label": "ExpenseAllocation",
+      "name": "연구용역비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-207-01",
+      "year": 2026,
+      "amount": 55000,
+      "unit": "천원"
+    },
+    {
+      "id": "n111",
+      "label": "LineItem",
+      "name": "사업 고도화 연구용역",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 55000,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업 고도화 연구용역 55,000,000원 = 55,000"
+    },
+    {
+      "id": "n112",
+      "label": "Project",
+      "name": "대학생 동아리 사회기여활동 지원",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "account": "일반회계"
+    },
+    {
+      "id": "n113",
+      "label": "BudgetAllocation",
+      "name": "대학생 동아리 사회기여활동 지원 / 2025",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2025,
+      "amount": 530000,
+      "unit": "천원",
+      "amount_krw": 530000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n114",
+      "label": "BudgetAllocation",
+      "name": "대학생 동아리 사회기여활동 지원 / 2026",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 650000,
+      "unit": "천원",
+      "amount_krw": 650000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n115",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 500000,
+      "unit": "천원"
+    },
+    {
+      "id": "n116",
+      "label": "LineItem",
+      "name": "대학생 동아리 지원사업 운영용역",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 495000,
+      "unit": "천원",
+      "raw_text": "ㅇ 대학생 동아리 지원사업 운영용역 495,000,000원 = 495,000"
+    },
+    {
+      "id": "n117",
+      "label": "LineItem",
+      "name": "사업 추진 관련 심사비 등",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "year": 2026,
+      "amount": 5000,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업 추진 관련 심사비 등 5,000,000원 = 5,000"
+    },
+    {
+      "id": "n118",
+      "label": "ExpenseAllocation",
+      "name": "행사운영비",
+      "pdf_page": 8,
+      "printed_page": 316,
+      "code": "100-201-03",
+      "year": 2026,
+      "amount": 150000,
+      "unit": "천원"
+    },
+    {
+      "id": "n119",
+      "label": "LineItem",
+      "name": "대학생 연합 페스티벌",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 150000,
+      "unit": "천원",
+      "raw_text": "ㅇ 대학생 연합 페스티벌 150,000,000원 = 150,000"
+    },
+    {
+      "id": "n120",
+      "label": "Project",
+      "name": "청년정책 대학생 협의체 운영",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "account": "일반회계"
+    },
+    {
+      "id": "n121",
+      "label": "BudgetAllocation",
+      "name": "청년정책 대학생 협의체 운영 / 2025",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2025,
+      "amount": 0,
+      "unit": "천원",
+      "amount_krw": 0,
+      "account": "일반회계"
+    },
+    {
+      "id": "n122",
+      "label": "BudgetAllocation",
+      "name": "청년정책 대학생 협의체 운영 / 2026",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "amount_krw": 50000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n123",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원"
+    },
+    {
+      "id": "n124",
+      "label": "LineItem",
+      "name": "청년정책 대학생 협의체 운영",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년정책 대학생 협의체 운영 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n125",
+      "label": "Policy",
+      "name": "행정운영경비(미래청년기획관 청년정책담당관)",
+      "pdf_page": 9,
+      "printed_page": 317
+    },
+    {
+      "id": "n126",
+      "label": "UnitProgram",
+      "name": "기본경비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "account": "일반회계"
+    },
+    {
+      "id": "n127",
+      "label": "Project",
+      "name": "기본경비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "account": "일반회계"
+    },
+    {
+      "id": "n128",
+      "label": "BudgetAllocation",
+      "name": "기본경비 / 2025",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2025,
+      "amount": 124862,
+      "unit": "천원",
+      "amount_krw": 124862000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n129",
+      "label": "BudgetAllocation",
+      "name": "기본경비 / 2026",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 121941,
+      "unit": "천원",
+      "amount_krw": 121941000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n130",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 67521,
+      "unit": "천원"
+    },
+    {
+      "id": "n131",
+      "label": "LineItem",
+      "name": "기본사무용종이류 등",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 67521,
+      "unit": "천원",
+      "raw_text": "ㅇ 기본사무용종이류 등 67,521,000원 = 67,521"
+    },
+    {
+      "id": "n132",
+      "label": "ExpenseAllocation",
+      "name": "국내여비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "code": "100-202-01",
+      "year": 2026,
+      "amount": 23520,
+      "unit": "천원"
+    },
+    {
+      "id": "n133",
+      "label": "LineItem",
+      "name": "여비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 23520,
+      "unit": "천원",
+      "raw_text": "ㅇ 여비 23,520,000원 = 23,520"
+    },
+    {
+      "id": "n134",
+      "label": "ExpenseAllocation",
+      "name": "기관운영업무추진비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "code": "100-203-01",
+      "year": 2026,
+      "amount": 7500,
+      "unit": "천원"
+    },
+    {
+      "id": "n135",
+      "label": "LineItem",
+      "name": "기관운영업무추진비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 7500,
+      "unit": "천원",
+      "raw_text": "ㅇ 기관운영업무추진비 7,500,000원 = 7,500"
+    },
+    {
+      "id": "n136",
+      "label": "ExpenseAllocation",
+      "name": "부서운영업무추진비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "code": "100-203-04",
+      "year": 2026,
+      "amount": 4200,
+      "unit": "천원"
+    },
+    {
+      "id": "n137",
+      "label": "LineItem",
+      "name": "부서운영업무추진비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 4200,
+      "unit": "천원",
+      "raw_text": "ㅇ 부서운영업무추진비 4,200,000원 = 4,200"
+    },
+    {
+      "id": "n138",
+      "label": "ExpenseAllocation",
+      "name": "직책급업무수행경비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "code": "100-204-01",
+      "year": 2026,
+      "amount": 19200,
+      "unit": "천원"
+    },
+    {
+      "id": "n139",
+      "label": "LineItem",
+      "name": "직책급업무수행경비",
+      "pdf_page": 9,
+      "printed_page": 317,
+      "year": 2026,
+      "amount": 19200,
+      "unit": "천원",
+      "raw_text": "ㅇ 직책급업무수행경비 19,200,000원 = 19,200"
+    },
+    {
+      "id": "n140",
+      "label": "Department",
+      "name": "청년사업담당관",
+      "pdf_page": 9,
+      "printed_page": 317
+    },
+    {
+      "id": "n141",
+      "label": "Policy",
+      "name": "청년 역량 성장을 위한 다양한 기회 제공",
+      "pdf_page": 9,
+      "printed_page": 317
+    },
+    {
+      "id": "n142",
+      "label": "UnitProgram",
+      "name": "청년의 권익증진 및 자립기반 구축",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "account": "일반회계"
+    },
+    {
+      "id": "n143",
+      "label": "Project",
+      "name": "서울시 고립·은둔청년 지원",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "account": "일반회계"
+    },
+    {
+      "id": "n144",
+      "label": "BudgetAllocation",
+      "name": "서울시 고립·은둔청년 지원 / 2025",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2025,
+      "amount": 4329876,
+      "unit": "천원",
+      "amount_krw": 4329876000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n145",
+      "label": "BudgetAllocation",
+      "name": "서울시 고립·은둔청년 지원 / 2026",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 3936500,
+      "unit": "천원",
+      "amount_krw": 3936500000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n146",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 300000,
+      "unit": "천원"
+    },
+    {
+      "id": "n147",
+      "label": "LineItem",
+      "name": "고립은둔청년 지킴이 양성교육",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 300000,
+      "unit": "천원",
+      "raw_text": "ㅇ 고립은둔청년 지킴이 양성교육 300,000,000원 = 300,000"
+    },
+    {
+      "id": "n148",
+      "label": "ExpenseAllocation",
+      "name": "시책추진업무추진비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-203-03",
+      "year": 2026,
+      "amount": 5000,
+      "unit": "천원"
+    },
+    {
+      "id": "n149",
+      "label": "LineItem",
+      "name": "시책추진업무추진비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 5000,
+      "unit": "천원",
+      "raw_text": "ㅇ 시책추진업무추진비 5,000,000원 = 5,000"
+    },
+    {
+      "id": "n150",
+      "label": "ExpenseAllocation",
+      "name": "민간위탁금",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-307-05",
+      "year": 2026,
+      "amount": 3581500,
+      "unit": "천원"
+    },
+    {
+      "id": "n151",
+      "label": "LineItem",
+      "name": "인건비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 1475300,
+      "unit": "천원",
+      "raw_text": "ㅇ 인건비 1,475,300,000원 = 1,475,300"
+    },
+    {
+      "id": "n152",
+      "label": "LineItem",
+      "name": "운영비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 446200,
+      "unit": "천원",
+      "raw_text": "ㅇ 운영비 446,200,000원 = 446,200"
+    },
+    {
+      "id": "n153",
+      "label": "LineItem",
+      "name": "사업비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 1660000,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업비 1,660,000,000원 = 1,660,000"
+    },
+    {
+      "id": "n154",
+      "label": "ExpenseAllocation",
+      "name": "공기관등에대한경상적위탁사업비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-308-13",
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원"
+    },
+    {
+      "id": "n155",
+      "label": "LineItem",
+      "name": "매체홍보비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 매체홍보비 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n156",
+      "label": "Project",
+      "name": "청년 마음건강 지원",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "account": "일반회계"
+    },
+    {
+      "id": "n157",
+      "label": "BudgetAllocation",
+      "name": "청년 마음건강 지원 / 2025",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2025,
+      "amount": 5767300,
+      "unit": "천원",
+      "amount_krw": 5767300000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n158",
+      "label": "BudgetAllocation",
+      "name": "청년 마음건강 지원 / 2026",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 4000700,
+      "unit": "천원",
+      "amount_krw": 4000700000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n159",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 154500,
+      "unit": "천원"
+    },
+    {
+      "id": "n160",
+      "label": "LineItem",
+      "name": "사전 진단 검사 도구 구매",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 95500,
+      "unit": "천원",
+      "raw_text": "ㅇ 사전 진단 검사 도구 구매 95,500,000원 = 95,500"
+    },
+    {
+      "id": "n161",
+      "label": "LineItem",
+      "name": "전문가 자문단 운영",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 2000,
+      "unit": "천원",
+      "raw_text": "ㅇ 전문가 자문단 운영 2,000,000원 = 2,000"
+    },
+    {
+      "id": "n162",
+      "label": "LineItem",
+      "name": "온라인 플랫폼 사용료",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 3000,
+      "unit": "천원",
+      "raw_text": "ㅇ 온라인 플랫폼 사용료 3,000,000원 = 3,000"
+    },
+    {
+      "id": "n163",
+      "label": "LineItem",
+      "name": "사업홍보물 제작비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 54000,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업홍보물 제작비 54,000,000원 = 54,000"
+    },
+    {
+      "id": "n164",
+      "label": "ExpenseAllocation",
+      "name": "시책추진업무추진비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-203-03",
+      "year": 2026,
+      "amount": 5000,
+      "unit": "천원"
+    },
+    {
+      "id": "n165",
+      "label": "LineItem",
+      "name": "시책추진업무추진비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 5000,
+      "unit": "천원",
+      "raw_text": "ㅇ 시책추진업무추진비 5,000,000원 = 5,000"
+    },
+    {
+      "id": "n166",
+      "label": "ExpenseAllocation",
+      "name": "기타보상금",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-301-14",
+      "year": 2026,
+      "amount": 3840200,
+      "unit": "천원"
+    },
+    {
+      "id": "n167",
+      "label": "LineItem",
+      "name": "청년 마음건강 상담 지원",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 3840200,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년 마음건강 상담 지원 3,840,200,000원 = 3,840,200"
+    },
+    {
+      "id": "n168",
+      "label": "ExpenseAllocation",
+      "name": "자산및물품취득비",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "code": "100-405-01",
+      "year": 2026,
+      "amount": 1000,
+      "unit": "천원"
+    },
+    {
+      "id": "n169",
+      "label": "LineItem",
+      "name": "상담실 책상, 의자 등 가구",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 1000,
+      "unit": "천원",
+      "raw_text": "ㅇ 상담실 책상, 의자 등 가구 1,000,000원 = 1,000"
+    },
+    {
+      "id": "n170",
+      "label": "Project",
+      "name": "서울광역청년센터 운영",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "account": "일반회계"
+    },
+    {
+      "id": "n171",
+      "label": "BudgetAllocation",
+      "name": "서울광역청년센터 운영 / 2025",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2025,
+      "amount": 3364056,
+      "unit": "천원",
+      "amount_krw": 3364056000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n172",
+      "label": "BudgetAllocation",
+      "name": "서울광역청년센터 운영 / 2026",
+      "pdf_page": 10,
+      "printed_page": 318,
+      "year": 2026,
+      "amount": 3515890,
+      "unit": "천원",
+      "amount_krw": 3515890000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n173",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 1540,
+      "unit": "천원"
+    },
+    {
+      "id": "n174",
+      "label": "LineItem",
+      "name": "회의 운영비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 1540,
+      "unit": "천원",
+      "raw_text": "ㅇ 회의 운영비 1,540,000원 = 1,540"
+    },
+    {
+      "id": "n175",
+      "label": "ExpenseAllocation",
+      "name": "공공운영비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-201-02",
+      "year": 2026,
+      "amount": 2064,
+      "unit": "천원"
+    },
+    {
+      "id": "n176",
+      "label": "LineItem",
+      "name": "영조물 손해배상 및 시설물 재해복구 공제등록비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 2064,
+      "unit": "천원",
+      "raw_text": "ㅇ 영조물 손해배상 및 시설물 재해복구 공제등록비 2,064,000원 = 2,064"
+    },
+    {
+      "id": "n177",
+      "label": "ExpenseAllocation",
+      "name": "민간위탁금",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-307-05",
+      "year": 2026,
+      "amount": 3512286,
+      "unit": "천원"
+    },
+    {
+      "id": "n178",
+      "label": "LineItem",
+      "name": "인건비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 1828000,
+      "unit": "천원",
+      "raw_text": "ㅇ 인건비 1,828,000,000원 = 1,828,000"
+    },
+    {
+      "id": "n179",
+      "label": "LineItem",
+      "name": "운영비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 400467,
+      "unit": "천원",
+      "raw_text": "ㅇ 운영비 400,467,000원 = 400,467"
+    },
+    {
+      "id": "n180",
+      "label": "LineItem",
+      "name": "사업비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 1283819,
+      "unit": "천원",
+      "raw_text": "ㅇ 사업비 1,283,819,000원 = 1,283,819"
+    },
+    {
+      "id": "n181",
+      "label": "Project",
+      "name": "지역별 서울청년센터 설치 운영",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "account": "일반회계"
+    },
+    {
+      "id": "n182",
+      "label": "BudgetAllocation",
+      "name": "지역별 서울청년센터 설치 운영 / 2025",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2025,
+      "amount": 4723228,
+      "unit": "천원",
+      "amount_krw": 4723228000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n183",
+      "label": "BudgetAllocation",
+      "name": "지역별 서울청년센터 설치 운영 / 2026",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 5150744,
+      "unit": "천원",
+      "amount_krw": 5150744000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n184",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 30000,
+      "unit": "천원"
+    },
+    {
+      "id": "n185",
+      "label": "LineItem",
+      "name": "청년센터 큐레이션",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 30000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년센터 큐레이션 30,000,000원 = 30,000"
+    },
+    {
+      "id": "n186",
+      "label": "ExpenseAllocation",
+      "name": "공공운영비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-201-02",
+      "year": 2026,
+      "amount": 6004,
+      "unit": "천원"
+    },
+    {
+      "id": "n187",
+      "label": "LineItem",
+      "name": "영조물 손해배상 및 시설물 재해복구 공제등록비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 6004,
+      "unit": "천원",
+      "raw_text": "ㅇ 영조물 손해배상 및 시설물 재해복구 공제등록비 6,004,000원 = 6,004"
+    },
+    {
+      "id": "n188",
+      "label": "ExpenseAllocation",
+      "name": "자치단체경상보조금",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-308-01",
+      "year": 2026,
+      "amount": 4914740,
+      "unit": "천원"
+    },
+    {
+      "id": "n189",
+      "label": "LineItem",
+      "name": "서울청년센터(17개소)",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 4844740,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울청년센터(17개소) 4,844,740,000원 = 4,844,740"
+    },
+    {
+      "id": "n190",
+      "label": "LineItem",
+      "name": "청년공간 활성화 지원사업",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 70000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년공간 활성화 지원사업 70,000,000원 = 70,000"
+    },
+    {
+      "id": "n191",
+      "label": "ExpenseAllocation",
+      "name": "자치단체자본보조",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-403-01",
+      "year": 2026,
+      "amount": 200000,
+      "unit": "천원"
+    },
+    {
+      "id": "n192",
+      "label": "LineItem",
+      "name": "서울청년센터 중구 신규 조성비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 200000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울청년센터 중구 신규 조성비 200,000,000원 = 200,000"
+    },
+    {
+      "id": "n193",
+      "label": "Project",
+      "name": "서울시 청년쿡 비즈니스센터 운영",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "account": "일반회계"
+    },
+    {
+      "id": "n194",
+      "label": "BudgetAllocation",
+      "name": "서울시 청년쿡 비즈니스센터 운영 / 2025",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2025,
+      "amount": 1090408,
+      "unit": "천원",
+      "amount_krw": 1090408000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n195",
+      "label": "BudgetAllocation",
+      "name": "서울시 청년쿡 비즈니스센터 운영 / 2026",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 1057838,
+      "unit": "천원",
+      "amount_krw": 1057838000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n196",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 891838,
+      "unit": "천원"
+    },
+    {
+      "id": "n197",
+      "label": "LineItem",
+      "name": "임차료·관리비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 68838,
+      "unit": "천원",
+      "raw_text": "ㅇ 임차료·관리비 68,838,000원 = 68,838"
+    },
+    {
+      "id": "n198",
+      "label": "LineItem",
+      "name": "전문가 회의수당 등",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 8000,
+      "unit": "천원",
+      "raw_text": "ㅇ 전문가 회의수당 등 8,000,000원 = 8,000"
+    },
+    {
+      "id": "n199",
+      "label": "LineItem",
+      "name": "청년쿡 비즈니스센터(광진) 일반용역비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 386000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년쿡 비즈니스센터(광진) 일반용역비 386,000,000원 = 386,000"
+    },
+    {
+      "id": "n200",
+      "label": "LineItem",
+      "name": "청년쿡 푸드테크센터(영등포) 일반용역비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 399000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년쿡 푸드테크센터(영등포) 일반용역비 399,000,000원 = 399,000"
+    },
+    {
+      "id": "n201",
+      "label": "LineItem",
+      "name": "성과평가",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 30000,
+      "unit": "천원",
+      "raw_text": "ㅇ 성과평가 30,000,000원 = 30,000"
+    },
+    {
+      "id": "n202",
+      "label": "ExpenseAllocation",
+      "name": "기타보상금",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-301-14",
+      "year": 2026,
+      "amount": 160000,
+      "unit": "천원"
+    },
+    {
+      "id": "n203",
+      "label": "LineItem",
+      "name": "초기사업비 지원",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 40000,
+      "unit": "천원",
+      "raw_text": "ㅇ 초기사업비 지원 40,000,000원 = 40,000"
+    },
+    {
+      "id": "n204",
+      "label": "LineItem",
+      "name": "최종사업비 지원",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "year": 2026,
+      "amount": 120000,
+      "unit": "천원",
+      "raw_text": "ㅇ 최종사업비 지원 120,000,000원 = 120,000"
+    },
+    {
+      "id": "n205",
+      "label": "ExpenseAllocation",
+      "name": "자산및물품취득비",
+      "pdf_page": 11,
+      "printed_page": 319,
+      "code": "100-405-01",
+      "year": 2026,
+      "amount": 6000,
+      "unit": "천원"
+    },
+    {
+      "id": "n206",
+      "label": "LineItem",
+      "name": "냉장·냉동고 등 물품 구입",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 6000,
+      "unit": "천원",
+      "raw_text": "ㅇ 냉장·냉동고 등 물품 구입 6,000,000원 = 6,000"
+    },
+    {
+      "id": "n207",
+      "label": "Project",
+      "name": "서울 청년수당",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "account": "일반회계"
+    },
+    {
+      "id": "n208",
+      "label": "BudgetAllocation",
+      "name": "서울 청년수당 / 2025",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2025,
+      "amount": 60297000,
+      "unit": "천원",
+      "amount_krw": 60297000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n209",
+      "label": "BudgetAllocation",
+      "name": "서울 청년수당 / 2026",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 58023000,
+      "unit": "천원",
+      "amount_krw": 58023000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n210",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 344000,
+      "unit": "천원"
+    },
+    {
+      "id": "n211",
+      "label": "LineItem",
+      "name": "청년수당 전담 콜센터 및 서류검증단 운영, 현금사용 모니터링",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 340000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년수당 전담 콜센터 및 서류검증단 운영, 현금사용 모니터링 340,000,000원 = 340,000"
+    },
+    {
+      "id": "n212",
+      "label": "LineItem",
+      "name": "자문회의 수당",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 4000,
+      "unit": "천원",
+      "raw_text": "ㅇ 자문회의 수당 4,000,000원 = 4,000"
+    },
+    {
+      "id": "n213",
+      "label": "ExpenseAllocation",
+      "name": "사회보장적수혜금(취약계층, 지방재원)",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-301-02",
+      "year": 2026,
+      "amount": 57679000,
+      "unit": "천원"
+    },
+    {
+      "id": "n214",
+      "label": "LineItem",
+      "name": "청년수당 지급",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 57679000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년수당 지급 57,679,000,000원 = 57,679,000"
+    },
+    {
+      "id": "n215",
+      "label": "Project",
+      "name": "청년 부동산 중개보수 및 이사비 지원",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "account": "일반회계"
+    },
+    {
+      "id": "n216",
+      "label": "BudgetAllocation",
+      "name": "청년 부동산 중개보수 및 이사비 지원 / 2025",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2025,
+      "amount": 3410000,
+      "unit": "천원",
+      "amount_krw": 3410000000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n217",
+      "label": "BudgetAllocation",
+      "name": "청년 부동산 중개보수 및 이사비 지원 / 2026",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 2773990,
+      "unit": "천원",
+      "amount_krw": 2773990000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n218",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 213990,
+      "unit": "천원"
+    },
+    {
+      "id": "n219",
+      "label": "LineItem",
+      "name": "청년 부동산 중개보수 및 이사비 지원 운영비",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 213990,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년 부동산 중개보수 및 이사비 지원 운영비 213,990,000원 = 213,990"
+    },
+    {
+      "id": "n220",
+      "label": "ExpenseAllocation",
+      "name": "사회보장적수혜금(취약계층, 지방재원)",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-301-02",
+      "year": 2026,
+      "amount": 2560000,
+      "unit": "천원"
+    },
+    {
+      "id": "n221",
+      "label": "LineItem",
+      "name": "청년 부동산 중개보수 및 이사비 지원",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 2560000,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년 부동산 중개보수 및 이사비 지원 2,560,000,000원 = 2,560,000"
+    },
+    {
+      "id": "n222",
+      "label": "Project",
+      "name": "청년의 건강한 재정출발지원(영테크)",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "account": "일반회계"
+    },
+    {
+      "id": "n223",
+      "label": "BudgetAllocation",
+      "name": "청년의 건강한 재정출발지원(영테크) / 2025",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2025,
+      "amount": 2949616,
+      "unit": "천원",
+      "amount_krw": 2949616000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n224",
+      "label": "BudgetAllocation",
+      "name": "청년의 건강한 재정출발지원(영테크) / 2026",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 2618368,
+      "unit": "천원",
+      "amount_krw": 2618368000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n225",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 612984,
+      "unit": "천원"
+    },
+    {
+      "id": "n226",
+      "label": "LineItem",
+      "name": "서울영테크 재무상담교육 전문기관 운영",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 602984,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영테크 재무상담교육 전문기관 운영 602,984,000원 = 602,984"
+    },
+    {
+      "id": "n227",
+      "label": "LineItem",
+      "name": "자문회의 및 심사비, 행사참가비 등",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 10000,
+      "unit": "천원",
+      "raw_text": "ㅇ 자문회의 및 심사비, 행사참가비 등 10,000,000원 = 10,000"
+    },
+    {
+      "id": "n228",
+      "label": "ExpenseAllocation",
+      "name": "공공운영비",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-201-02",
+      "year": 2026,
+      "amount": 249384,
+      "unit": "천원"
+    },
+    {
+      "id": "n229",
+      "label": "LineItem",
+      "name": "서울영테크 시스템 유지보수",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 226429,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영테크 시스템 유지보수 226,429,000원 = 226,429"
+    },
+    {
+      "id": "n230",
+      "label": "LineItem",
+      "name": "상용 SW유지관리",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 21755,
+      "unit": "천원",
+      "raw_text": "ㅇ 상용 SW유지관리 21,755,000원 = 21,755"
+    },
+    {
+      "id": "n231",
+      "label": "LineItem",
+      "name": "서울영테크 알림톡(재무상담. 클래스 신청)",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 1200,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영테크 알림톡(재무상담. 클래스 신청) 1,200,000원 = 1,200"
+    },
+    {
+      "id": "n232",
+      "label": "ExpenseAllocation",
+      "name": "기타보상금",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-301-14",
+      "year": 2026,
+      "amount": 1706000,
+      "unit": "천원"
+    },
+    {
+      "id": "n233",
+      "label": "LineItem",
+      "name": "서울영테크 상담료 지급",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 1706000,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울영테크 상담료 지급 1,706,000,000원 = 1,706,000"
+    },
+    {
+      "id": "n234",
+      "label": "ExpenseAllocation",
+      "name": "공기관등에대한경상적위탁사업비",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "code": "100-308-13",
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원"
+    },
+    {
+      "id": "n235",
+      "label": "LineItem",
+      "name": "매체홍보비",
+      "pdf_page": 12,
+      "printed_page": 320,
+      "year": 2026,
+      "amount": 50000,
+      "unit": "천원",
+      "raw_text": "ㅇ 매체홍보비 50,000,000원 = 50,000"
+    },
+    {
+      "id": "n236",
+      "label": "Project",
+      "name": "청년 미래투자 금융 지원",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "account": "일반회계"
+    },
+    {
+      "id": "n237",
+      "label": "BudgetAllocation",
+      "name": "청년 미래투자 금융 지원 / 2025",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2025,
+      "amount": 4117089,
+      "unit": "천원",
+      "amount_krw": 4117089000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n238",
+      "label": "BudgetAllocation",
+      "name": "청년 미래투자 금융 지원 / 2026",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 3829963,
+      "unit": "천원",
+      "amount_krw": 3829963000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n239",
+      "label": "ExpenseAllocation",
+      "name": "기간제근로자등보수",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "code": "100-101-04",
+      "year": 2026,
+      "amount": 24063,
+      "unit": "천원"
+    },
+    {
+      "id": "n240",
+      "label": "LineItem",
+      "name": "학자금 대출이자 지원 서류검증 인력 운영",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 24063,
+      "unit": "천원",
+      "raw_text": "ㅇ 학자금 대출이자 지원 서류검증 인력 운영 24,063,000원 = 24,063"
+    },
+    {
+      "id": "n241",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 7400,
+      "unit": "천원"
+    },
+    {
+      "id": "n242",
+      "label": "LineItem",
+      "name": "포스터, 웹배너 등 제작비",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 5000,
+      "unit": "천원",
+      "raw_text": "ㅇ 포스터, 웹배너 등 제작비 5,000,000원 = 5,000"
+    },
+    {
+      "id": "n243",
+      "label": "LineItem",
+      "name": "학자금 위원회 운영",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 2400,
+      "unit": "천원",
+      "raw_text": "ㅇ 학자금 위원회 운영 2,400,000원 = 2,400"
+    },
+    {
+      "id": "n244",
+      "label": "ExpenseAllocation",
+      "name": "이차보전금",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "code": "100-307-08",
+      "year": 2026,
+      "amount": 3798500,
+      "unit": "천원"
+    },
+    {
+      "id": "n245",
+      "label": "LineItem",
+      "name": "학자금 대출이자 지원",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 3213500,
+      "unit": "천원",
+      "raw_text": "ㅇ 학자금 대출이자 지원 3,213,500,000원 = 3,213,500"
+    },
+    {
+      "id": "n246",
+      "label": "LineItem",
+      "name": "학자금대출 신용회복지원",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 130000,
+      "unit": "천원",
+      "raw_text": "ㅇ 학자금대출 신용회복지원 130,000,000원 = 130,000"
+    },
+    {
+      "id": "n247",
+      "label": "LineItem",
+      "name": "긴급생활안정자금 이자지원",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 455000,
+      "unit": "천원",
+      "raw_text": "ㅇ 긴급생활안정자금 이자지원 455,000,000원 = 455,000"
+    },
+    {
+      "id": "n248",
+      "label": "Policy",
+      "name": "행정운영경비(미래청년기획관 청년사업담당관)",
+      "pdf_page": 13,
+      "printed_page": 321
+    },
+    {
+      "id": "n249",
+      "label": "UnitProgram",
+      "name": "기본경비",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "account": "일반회계"
+    },
+    {
+      "id": "n250",
+      "label": "Project",
+      "name": "기본경비",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "account": "일반회계"
+    },
+    {
+      "id": "n251",
+      "label": "BudgetAllocation",
+      "name": "기본경비 / 2025",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2025,
+      "amount": 41174,
+      "unit": "천원",
+      "amount_krw": 41174000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n252",
+      "label": "BudgetAllocation",
+      "name": "기본경비 / 2026",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 40388,
+      "unit": "천원",
+      "amount_krw": 40388000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n253",
+      "label": "ExpenseAllocation",
+      "name": "사무관리비",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "code": "100-201-01",
+      "year": 2026,
+      "amount": 36188,
+      "unit": "천원"
+    },
+    {
+      "id": "n254",
+      "label": "LineItem",
+      "name": "기본사무용종이류",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 36188,
+      "unit": "천원",
+      "raw_text": "ㅇ 기본사무용종이류 36,188,000원 = 36,188"
+    },
+    {
+      "id": "n255",
+      "label": "ExpenseAllocation",
+      "name": "부서운영업무추진비",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "code": "100-203-04",
+      "year": 2026,
+      "amount": 4200,
+      "unit": "천원"
+    },
+    {
+      "id": "n256",
+      "label": "LineItem",
+      "name": "부서운영업무추진비",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "year": 2026,
+      "amount": 4200,
+      "unit": "천원",
+      "raw_text": "ㅇ 부서운영업무추진비 4,200,000원 = 4,200"
+    },
+    {
+      "id": "n257",
+      "label": "Policy",
+      "name": "재무활동(미래청년기획관 청년사업담당관)",
+      "pdf_page": 13,
+      "printed_page": 321
+    },
+    {
+      "id": "n258",
+      "label": "UnitProgram",
+      "name": "보전지출(미래청년기획관 청년사업담당관)",
+      "pdf_page": 13,
+      "printed_page": 321,
+      "account": "일반회계"
+    },
+    {
+      "id": "n259",
+      "label": "Project",
+      "name": "국고보조금 반환",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "account": "일반회계"
+    },
+    {
+      "id": "n260",
+      "label": "BudgetAllocation",
+      "name": "국고보조금 반환 / 2025",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "year": 2025,
+      "amount": 0,
+      "unit": "천원",
+      "amount_krw": 0,
+      "account": "일반회계"
+    },
+    {
+      "id": "n261",
+      "label": "BudgetAllocation",
+      "name": "국고보조금 반환 / 2026",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "year": 2026,
+      "amount": 73135,
+      "unit": "천원",
+      "amount_krw": 73135000,
+      "account": "일반회계"
+    },
+    {
+      "id": "n262",
+      "label": "ExpenseAllocation",
+      "name": "국고보조금반환금",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "code": "100-802-01",
+      "year": 2026,
+      "amount": 73135,
+      "unit": "천원"
+    },
+    {
+      "id": "n263",
+      "label": "LineItem",
+      "name": "청년 전세보증금반환보증 보증료 국고보조금 반환금",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "year": 2026,
+      "amount": 73135,
+      "unit": "천원",
+      "raw_text": "ㅇ 청년 전세보증금반환보증 보증료 국고보조금 반환금 73,135,000원 = 73,135"
+    },
+    {
+      "id": "n264",
+      "label": "UnitProgram",
+      "name": "보전지출(미래청년기획관 청년사업담당관)",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "account": "균형발전특별회계"
+    },
+    {
+      "id": "n265",
+      "label": "Project",
+      "name": "국고보조금 반환",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "account": "균형발전특별회계"
+    },
+    {
+      "id": "n266",
+      "label": "BudgetAllocation",
+      "name": "국고보조금 반환 / 2025",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "year": 2025,
+      "amount": 0,
+      "unit": "천원",
+      "amount_krw": 0,
+      "account": "균형발전특별회계"
+    },
+    {
+      "id": "n267",
+      "label": "BudgetAllocation",
+      "name": "국고보조금 반환 / 2026",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "year": 2026,
+      "amount": 109878,
+      "unit": "천원",
+      "amount_krw": 109878000,
+      "account": "균형발전특별회계"
+    },
+    {
+      "id": "n268",
+      "label": "ExpenseAllocation",
+      "name": "국고보조금반환금",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "code": "215-802-01",
+      "year": 2026,
+      "amount": 109878,
+      "unit": "천원"
+    },
+    {
+      "id": "n269",
+      "label": "LineItem",
+      "name": "서울청년센터 성북 조성 국고보조금 반환금",
+      "pdf_page": 14,
+      "printed_page": 322,
+      "year": 2026,
+      "amount": 109878,
+      "unit": "천원",
+      "raw_text": "ㅇ 서울청년센터 성북 조성 국고보조금 반환금 109,878,000원 = 109,878"
+    }
+  ],
+  "relationships": [
+    {
+      "source": "n1",
+      "type": "HAS_DEPARTMENT",
+      "target": "n3",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "HAS_POLICY",
+      "target": "n4",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n4",
+      "type": "HAS_UNIT",
+      "target": "n5",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n5",
+      "type": "HAS_PROJECT",
+      "target": "n6",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n6",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n6",
+      "type": "HAS_BUDGET",
+      "target": "n7",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n7",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n6",
+      "type": "HAS_BUDGET",
+      "target": "n8",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "HAS_EXPENSE",
+      "target": "n9",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n9",
+      "type": "HAS_LINE_ITEM",
+      "target": "n10",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "HAS_EXPENSE",
+      "target": "n11",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n11",
+      "type": "HAS_LINE_ITEM",
+      "target": "n12",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n11",
+      "type": "HAS_LINE_ITEM",
+      "target": "n13",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n11",
+      "type": "HAS_LINE_ITEM",
+      "target": "n14",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "HAS_EXPENSE",
+      "target": "n15",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n15",
+      "type": "HAS_LINE_ITEM",
+      "target": "n16",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "HAS_EXPENSE",
+      "target": "n17",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n17",
+      "type": "HAS_LINE_ITEM",
+      "target": "n18",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "HAS_EXPENSE",
+      "target": "n19",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n19",
+      "type": "HAS_LINE_ITEM",
+      "target": "n20",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "HAS_EXPENSE",
+      "target": "n21",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n21",
+      "type": "HAS_LINE_ITEM",
+      "target": "n22",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n8",
+      "type": "HAS_EXPENSE",
+      "target": "n23",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n23",
+      "type": "HAS_LINE_ITEM",
+      "target": "n24",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n23",
+      "type": "HAS_LINE_ITEM",
+      "target": "n25",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n23",
+      "type": "HAS_LINE_ITEM",
+      "target": "n26",
+      "pdf_page": 5,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n5",
+      "type": "HAS_PROJECT",
+      "target": "n27",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n27",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n27",
+      "type": "HAS_BUDGET",
+      "target": "n28",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n28",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n27",
+      "type": "HAS_BUDGET",
+      "target": "n29",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n29",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n29",
+      "type": "HAS_EXPENSE",
+      "target": "n30",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n30",
+      "type": "HAS_LINE_ITEM",
+      "target": "n31",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n29",
+      "type": "HAS_EXPENSE",
+      "target": "n32",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n32",
+      "type": "HAS_LINE_ITEM",
+      "target": "n33",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n5",
+      "type": "HAS_PROJECT",
+      "target": "n34",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n34",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n34",
+      "type": "HAS_BUDGET",
+      "target": "n35",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n35",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n34",
+      "type": "HAS_BUDGET",
+      "target": "n36",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n36",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n36",
+      "type": "HAS_EXPENSE",
+      "target": "n37",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n37",
+      "type": "HAS_LINE_ITEM",
+      "target": "n38",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n36",
+      "type": "HAS_EXPENSE",
+      "target": "n39",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n39",
+      "type": "HAS_LINE_ITEM",
+      "target": "n40",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n36",
+      "type": "HAS_EXPENSE",
+      "target": "n41",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n41",
+      "type": "HAS_LINE_ITEM",
+      "target": "n42",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n5",
+      "type": "HAS_PROJECT",
+      "target": "n43",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n43",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n43",
+      "type": "HAS_BUDGET",
+      "target": "n44",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n44",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n43",
+      "type": "HAS_BUDGET",
+      "target": "n45",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n45",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n45",
+      "type": "HAS_EXPENSE",
+      "target": "n46",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n46",
+      "type": "HAS_LINE_ITEM",
+      "target": "n47",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n46",
+      "type": "HAS_LINE_ITEM",
+      "target": "n48",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n5",
+      "type": "HAS_PROJECT",
+      "target": "n49",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n49",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n49",
+      "type": "HAS_BUDGET",
+      "target": "n50",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n50",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n49",
+      "type": "HAS_BUDGET",
+      "target": "n51",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n51",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n51",
+      "type": "HAS_EXPENSE",
+      "target": "n52",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n52",
+      "type": "HAS_LINE_ITEM",
+      "target": "n53",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n5",
+      "type": "HAS_PROJECT",
+      "target": "n54",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n54",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n54",
+      "type": "HAS_BUDGET",
+      "target": "n55",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n55",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n54",
+      "type": "HAS_BUDGET",
+      "target": "n56",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n56",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n56",
+      "type": "HAS_EXPENSE",
+      "target": "n57",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n57",
+      "type": "HAS_LINE_ITEM",
+      "target": "n58",
+      "pdf_page": 6,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n4",
+      "type": "HAS_UNIT",
+      "target": "n59",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n59",
+      "type": "HAS_PROJECT",
+      "target": "n60",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n60",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n60",
+      "type": "HAS_BUDGET",
+      "target": "n61",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n61",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n60",
+      "type": "HAS_BUDGET",
+      "target": "n62",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n62",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n62",
+      "type": "HAS_EXPENSE",
+      "target": "n63",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n63",
+      "type": "HAS_LINE_ITEM",
+      "target": "n64",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n63",
+      "type": "HAS_LINE_ITEM",
+      "target": "n65",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n62",
+      "type": "HAS_EXPENSE",
+      "target": "n66",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n67",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n68",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n69",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n70",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n71",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n72",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n73",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n66",
+      "type": "HAS_LINE_ITEM",
+      "target": "n74",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n62",
+      "type": "HAS_EXPENSE",
+      "target": "n75",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n75",
+      "type": "HAS_LINE_ITEM",
+      "target": "n76",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n59",
+      "type": "HAS_PROJECT",
+      "target": "n77",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n77",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n77",
+      "type": "HAS_BUDGET",
+      "target": "n78",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n78",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n77",
+      "type": "HAS_BUDGET",
+      "target": "n79",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n79",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n79",
+      "type": "HAS_EXPENSE",
+      "target": "n80",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n80",
+      "type": "HAS_LINE_ITEM",
+      "target": "n81",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n80",
+      "type": "HAS_LINE_ITEM",
+      "target": "n82",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n79",
+      "type": "HAS_EXPENSE",
+      "target": "n83",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n83",
+      "type": "HAS_LINE_ITEM",
+      "target": "n84",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n59",
+      "type": "HAS_PROJECT",
+      "target": "n85",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n85",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n85",
+      "type": "HAS_BUDGET",
+      "target": "n86",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n86",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n85",
+      "type": "HAS_BUDGET",
+      "target": "n87",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n87",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 7,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n87",
+      "type": "HAS_EXPENSE",
+      "target": "n88",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n88",
+      "type": "HAS_LINE_ITEM",
+      "target": "n89",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n87",
+      "type": "HAS_EXPENSE",
+      "target": "n90",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n90",
+      "type": "HAS_LINE_ITEM",
+      "target": "n91",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n90",
+      "type": "HAS_LINE_ITEM",
+      "target": "n92",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n90",
+      "type": "HAS_LINE_ITEM",
+      "target": "n93",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n87",
+      "type": "HAS_EXPENSE",
+      "target": "n94",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n94",
+      "type": "HAS_LINE_ITEM",
+      "target": "n95",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n94",
+      "type": "HAS_LINE_ITEM",
+      "target": "n96",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n59",
+      "type": "HAS_PROJECT",
+      "target": "n97",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n97",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n97",
+      "type": "HAS_BUDGET",
+      "target": "n98",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n98",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n97",
+      "type": "HAS_BUDGET",
+      "target": "n99",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n99",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n99",
+      "type": "HAS_EXPENSE",
+      "target": "n100",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n100",
+      "type": "HAS_LINE_ITEM",
+      "target": "n101",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n100",
+      "type": "HAS_LINE_ITEM",
+      "target": "n102",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n4",
+      "type": "HAS_UNIT",
+      "target": "n103",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n103",
+      "type": "HAS_PROJECT",
+      "target": "n104",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n104",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n104",
+      "type": "HAS_BUDGET",
+      "target": "n105",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n105",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n104",
+      "type": "HAS_BUDGET",
+      "target": "n106",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n106",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n106",
+      "type": "HAS_EXPENSE",
+      "target": "n107",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n107",
+      "type": "HAS_LINE_ITEM",
+      "target": "n108",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n107",
+      "type": "HAS_LINE_ITEM",
+      "target": "n109",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n106",
+      "type": "HAS_EXPENSE",
+      "target": "n110",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n110",
+      "type": "HAS_LINE_ITEM",
+      "target": "n111",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n103",
+      "type": "HAS_PROJECT",
+      "target": "n112",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n112",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n112",
+      "type": "HAS_BUDGET",
+      "target": "n113",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n113",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n112",
+      "type": "HAS_BUDGET",
+      "target": "n114",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n114",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n114",
+      "type": "HAS_EXPENSE",
+      "target": "n115",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n115",
+      "type": "HAS_LINE_ITEM",
+      "target": "n116",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n115",
+      "type": "HAS_LINE_ITEM",
+      "target": "n117",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n114",
+      "type": "HAS_EXPENSE",
+      "target": "n118",
+      "pdf_page": 8,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n118",
+      "type": "HAS_LINE_ITEM",
+      "target": "n119",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n103",
+      "type": "HAS_PROJECT",
+      "target": "n120",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n120",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n120",
+      "type": "HAS_BUDGET",
+      "target": "n121",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n121",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n120",
+      "type": "HAS_BUDGET",
+      "target": "n122",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n122",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n122",
+      "type": "HAS_EXPENSE",
+      "target": "n123",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n123",
+      "type": "HAS_LINE_ITEM",
+      "target": "n124",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "HAS_POLICY",
+      "target": "n125",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n125",
+      "type": "HAS_UNIT",
+      "target": "n126",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n126",
+      "type": "HAS_PROJECT",
+      "target": "n127",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n3",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n127",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n127",
+      "type": "HAS_BUDGET",
+      "target": "n128",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n128",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n127",
+      "type": "HAS_BUDGET",
+      "target": "n129",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n129",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n129",
+      "type": "HAS_EXPENSE",
+      "target": "n130",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n130",
+      "type": "HAS_LINE_ITEM",
+      "target": "n131",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n129",
+      "type": "HAS_EXPENSE",
+      "target": "n132",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n132",
+      "type": "HAS_LINE_ITEM",
+      "target": "n133",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n129",
+      "type": "HAS_EXPENSE",
+      "target": "n134",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n134",
+      "type": "HAS_LINE_ITEM",
+      "target": "n135",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n129",
+      "type": "HAS_EXPENSE",
+      "target": "n136",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n136",
+      "type": "HAS_LINE_ITEM",
+      "target": "n137",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n129",
+      "type": "HAS_EXPENSE",
+      "target": "n138",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n138",
+      "type": "HAS_LINE_ITEM",
+      "target": "n139",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n1",
+      "type": "HAS_DEPARTMENT",
+      "target": "n140",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "HAS_POLICY",
+      "target": "n141",
+      "pdf_page": 9,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n141",
+      "type": "HAS_UNIT",
+      "target": "n142",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n143",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n143",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n143",
+      "type": "HAS_BUDGET",
+      "target": "n144",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n144",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n143",
+      "type": "HAS_BUDGET",
+      "target": "n145",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n145",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n145",
+      "type": "HAS_EXPENSE",
+      "target": "n146",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n146",
+      "type": "HAS_LINE_ITEM",
+      "target": "n147",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n145",
+      "type": "HAS_EXPENSE",
+      "target": "n148",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n148",
+      "type": "HAS_LINE_ITEM",
+      "target": "n149",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n145",
+      "type": "HAS_EXPENSE",
+      "target": "n150",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n150",
+      "type": "HAS_LINE_ITEM",
+      "target": "n151",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n150",
+      "type": "HAS_LINE_ITEM",
+      "target": "n152",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n150",
+      "type": "HAS_LINE_ITEM",
+      "target": "n153",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n145",
+      "type": "HAS_EXPENSE",
+      "target": "n154",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n154",
+      "type": "HAS_LINE_ITEM",
+      "target": "n155",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n156",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n156",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n156",
+      "type": "HAS_BUDGET",
+      "target": "n157",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n157",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n156",
+      "type": "HAS_BUDGET",
+      "target": "n158",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n158",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n158",
+      "type": "HAS_EXPENSE",
+      "target": "n159",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n159",
+      "type": "HAS_LINE_ITEM",
+      "target": "n160",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n159",
+      "type": "HAS_LINE_ITEM",
+      "target": "n161",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n159",
+      "type": "HAS_LINE_ITEM",
+      "target": "n162",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n159",
+      "type": "HAS_LINE_ITEM",
+      "target": "n163",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n158",
+      "type": "HAS_EXPENSE",
+      "target": "n164",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n164",
+      "type": "HAS_LINE_ITEM",
+      "target": "n165",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n158",
+      "type": "HAS_EXPENSE",
+      "target": "n166",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n166",
+      "type": "HAS_LINE_ITEM",
+      "target": "n167",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n158",
+      "type": "HAS_EXPENSE",
+      "target": "n168",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n168",
+      "type": "HAS_LINE_ITEM",
+      "target": "n169",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n170",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n170",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n170",
+      "type": "HAS_BUDGET",
+      "target": "n171",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n171",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n170",
+      "type": "HAS_BUDGET",
+      "target": "n172",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n172",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 10,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n172",
+      "type": "HAS_EXPENSE",
+      "target": "n173",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n173",
+      "type": "HAS_LINE_ITEM",
+      "target": "n174",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n172",
+      "type": "HAS_EXPENSE",
+      "target": "n175",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n175",
+      "type": "HAS_LINE_ITEM",
+      "target": "n176",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n172",
+      "type": "HAS_EXPENSE",
+      "target": "n177",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n177",
+      "type": "HAS_LINE_ITEM",
+      "target": "n178",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n177",
+      "type": "HAS_LINE_ITEM",
+      "target": "n179",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n177",
+      "type": "HAS_LINE_ITEM",
+      "target": "n180",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n181",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n181",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n181",
+      "type": "HAS_BUDGET",
+      "target": "n182",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n182",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n181",
+      "type": "HAS_BUDGET",
+      "target": "n183",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n183",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n183",
+      "type": "HAS_EXPENSE",
+      "target": "n184",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n184",
+      "type": "HAS_LINE_ITEM",
+      "target": "n185",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n183",
+      "type": "HAS_EXPENSE",
+      "target": "n186",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n186",
+      "type": "HAS_LINE_ITEM",
+      "target": "n187",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n183",
+      "type": "HAS_EXPENSE",
+      "target": "n188",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n188",
+      "type": "HAS_LINE_ITEM",
+      "target": "n189",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n188",
+      "type": "HAS_LINE_ITEM",
+      "target": "n190",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n183",
+      "type": "HAS_EXPENSE",
+      "target": "n191",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n191",
+      "type": "HAS_LINE_ITEM",
+      "target": "n192",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n193",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n193",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n193",
+      "type": "HAS_BUDGET",
+      "target": "n194",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n194",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n193",
+      "type": "HAS_BUDGET",
+      "target": "n195",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n195",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n195",
+      "type": "HAS_EXPENSE",
+      "target": "n196",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n196",
+      "type": "HAS_LINE_ITEM",
+      "target": "n197",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n196",
+      "type": "HAS_LINE_ITEM",
+      "target": "n198",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n196",
+      "type": "HAS_LINE_ITEM",
+      "target": "n199",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n196",
+      "type": "HAS_LINE_ITEM",
+      "target": "n200",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n196",
+      "type": "HAS_LINE_ITEM",
+      "target": "n201",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n195",
+      "type": "HAS_EXPENSE",
+      "target": "n202",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n202",
+      "type": "HAS_LINE_ITEM",
+      "target": "n203",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n202",
+      "type": "HAS_LINE_ITEM",
+      "target": "n204",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n195",
+      "type": "HAS_EXPENSE",
+      "target": "n205",
+      "pdf_page": 11,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n205",
+      "type": "HAS_LINE_ITEM",
+      "target": "n206",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n207",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n207",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n207",
+      "type": "HAS_BUDGET",
+      "target": "n208",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n208",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n207",
+      "type": "HAS_BUDGET",
+      "target": "n209",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n209",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n209",
+      "type": "HAS_EXPENSE",
+      "target": "n210",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n210",
+      "type": "HAS_LINE_ITEM",
+      "target": "n211",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n210",
+      "type": "HAS_LINE_ITEM",
+      "target": "n212",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n209",
+      "type": "HAS_EXPENSE",
+      "target": "n213",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n213",
+      "type": "HAS_LINE_ITEM",
+      "target": "n214",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n215",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n215",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n215",
+      "type": "HAS_BUDGET",
+      "target": "n216",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n216",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n215",
+      "type": "HAS_BUDGET",
+      "target": "n217",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n217",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n217",
+      "type": "HAS_EXPENSE",
+      "target": "n218",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n218",
+      "type": "HAS_LINE_ITEM",
+      "target": "n219",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n217",
+      "type": "HAS_EXPENSE",
+      "target": "n220",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n220",
+      "type": "HAS_LINE_ITEM",
+      "target": "n221",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n222",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n222",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n222",
+      "type": "HAS_BUDGET",
+      "target": "n223",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n223",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n222",
+      "type": "HAS_BUDGET",
+      "target": "n224",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n224",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n224",
+      "type": "HAS_EXPENSE",
+      "target": "n225",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n225",
+      "type": "HAS_LINE_ITEM",
+      "target": "n226",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n225",
+      "type": "HAS_LINE_ITEM",
+      "target": "n227",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n224",
+      "type": "HAS_EXPENSE",
+      "target": "n228",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n228",
+      "type": "HAS_LINE_ITEM",
+      "target": "n229",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n228",
+      "type": "HAS_LINE_ITEM",
+      "target": "n230",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n228",
+      "type": "HAS_LINE_ITEM",
+      "target": "n231",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n224",
+      "type": "HAS_EXPENSE",
+      "target": "n232",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n232",
+      "type": "HAS_LINE_ITEM",
+      "target": "n233",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n224",
+      "type": "HAS_EXPENSE",
+      "target": "n234",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n234",
+      "type": "HAS_LINE_ITEM",
+      "target": "n235",
+      "pdf_page": 12,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n142",
+      "type": "HAS_PROJECT",
+      "target": "n236",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n236",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n236",
+      "type": "HAS_BUDGET",
+      "target": "n237",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n237",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n236",
+      "type": "HAS_BUDGET",
+      "target": "n238",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n238",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n238",
+      "type": "HAS_EXPENSE",
+      "target": "n239",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n239",
+      "type": "HAS_LINE_ITEM",
+      "target": "n240",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n238",
+      "type": "HAS_EXPENSE",
+      "target": "n241",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n241",
+      "type": "HAS_LINE_ITEM",
+      "target": "n242",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n241",
+      "type": "HAS_LINE_ITEM",
+      "target": "n243",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n238",
+      "type": "HAS_EXPENSE",
+      "target": "n244",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n244",
+      "type": "HAS_LINE_ITEM",
+      "target": "n245",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n244",
+      "type": "HAS_LINE_ITEM",
+      "target": "n246",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n244",
+      "type": "HAS_LINE_ITEM",
+      "target": "n247",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "HAS_POLICY",
+      "target": "n248",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n248",
+      "type": "HAS_UNIT",
+      "target": "n249",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n249",
+      "type": "HAS_PROJECT",
+      "target": "n250",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n250",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n250",
+      "type": "HAS_BUDGET",
+      "target": "n251",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n251",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n250",
+      "type": "HAS_BUDGET",
+      "target": "n252",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n252",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n252",
+      "type": "HAS_EXPENSE",
+      "target": "n253",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n253",
+      "type": "HAS_LINE_ITEM",
+      "target": "n254",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n252",
+      "type": "HAS_EXPENSE",
+      "target": "n255",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n255",
+      "type": "HAS_LINE_ITEM",
+      "target": "n256",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "HAS_POLICY",
+      "target": "n257",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n257",
+      "type": "HAS_UNIT",
+      "target": "n258",
+      "pdf_page": 13,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n258",
+      "type": "HAS_PROJECT",
+      "target": "n259",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n259",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n259",
+      "type": "HAS_BUDGET",
+      "target": "n260",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n260",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n259",
+      "type": "HAS_BUDGET",
+      "target": "n261",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n261",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n261",
+      "type": "HAS_EXPENSE",
+      "target": "n262",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n262",
+      "type": "HAS_LINE_ITEM",
+      "target": "n263",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n257",
+      "type": "HAS_UNIT",
+      "target": "n264",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n264",
+      "type": "HAS_PROJECT",
+      "target": "n265",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n140",
+      "type": "RESPONSIBLE_FOR",
+      "target": "n265",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n265",
+      "type": "HAS_BUDGET",
+      "target": "n266",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n266",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n265",
+      "type": "HAS_BUDGET",
+      "target": "n267",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n267",
+      "type": "EVIDENCED_BY",
+      "target": "n2",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n267",
+      "type": "HAS_EXPENSE",
+      "target": "n268",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    },
+    {
+      "source": "n268",
+      "type": "HAS_LINE_ITEM",
+      "target": "n269",
+      "pdf_page": 14,
+      "basis": "document_structure",
+      "schema_version": "budget-v1"
+    }
+  ]
+};
+const root=document.getElementById('kg-explorer');
+const el=id=>root.querySelector('#kg-'+id);
+const byId=new Map(graph.nodes.map(n=>[n.id,n]));
+const outgoing=(id,type)=>graph.relationships.filter(e=>e.source===id&&e.type===type).map(e=>byId.get(e.target));
+const incoming=(id,type)=>graph.relationships.filter(e=>e.target===id&&e.type===type).map(e=>byId.get(e.source));
+const project=name=>graph.nodes.find(n=>n.label==='Project'&&n.name===name);
+const budget=(p,y)=>outgoing(p.id,'HAS_BUDGET').find(n=>n.year===y);
+const fmt=n=>n.toLocaleString('ko-KR');
+const safe=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const allowance=project('서울 청년수당');
+const mind=project('청년 마음건강 지원');
+const finance=project('청년 미래투자 금융 지원');
+const source=n=>({id:'source-'+n.id,name:`PDF ${n.pdf_page}쪽 / 인쇄 ${n.printed_page}쪽`,label:'Source',pdf_page:n.pdf_page,printed_page:n.printed_page});
+const relation=(a,b,label,semantic=false)=>({source:a.id,target:b.id,label,semantic});
+let state={view:'budget',question:'amount',step:0};
+const saved=window.openai?.widgetState?.privateContent;
+if(saved&&['budget','structure','semantic'].includes(saved.view))state={...state,...saved};
+let model;
+const questions={budget:[['amount','청년수당의 2026년 예산은?'],['change','마음건강 지원 예산은 얼마나 줄었나?'],['breakdown','청년수당 예산은 어떻게 구성되나?']],structure:[['owner','청년수당은 어느 부서·정책 소관인가?']],semantic:[['meaning','수당 지급과 이자 지원 사업을 함께 찾으면?']]};
+function build(){
+ let ns=[],es=[],steps=[],answer='',evidence='';
+ const add=(n)=>{if(!ns.some(x=>x.id===n.id))ns.push(n);return n};
+ const connect=(a,b,label,semantic=false)=>{add(a);add(b);es.push(relation(a,b,label,semantic));return es.length-1};
+ const stage=(text,ids,ei)=>steps.push({text,ids:ids.map(n=>n.id),edges:ei});
+ if(state.question==='amount'){
+  const b=budget(allowance,2026),s=source(b),other=budget(allowance,2025);
+  connect(allowance,b,'연도별 예산');connect(b,s,'원문 근거');connect(allowance,other,'연도별 예산');
+  stage('사업명으로 서울 청년수당을 찾습니다.',[allowance],[]);
+  stage('연도 조건 2026으로 예산 기록을 선택합니다.',[b],[0]);
+  stage('금액·단위를 읽고 원문 위치를 확인합니다.',[s],[1]);
+  answer=`2026년 서울 청년수당 사업 예산은 ${fmt(b.amount)}천원, 즉 ${fmt(b.amount_krw/1e8)}억원입니다.`;
+  evidence=`2025년 기록(${fmt(other.amount)}천원)은 연도 조건에서 제외합니다. 근거: PDF ${b.pdf_page}쪽 / 인쇄 ${b.printed_page}쪽.`;
+ }else if(state.question==='change'){
+  const a=budget(mind,2025),b=budget(mind,2026),s=source(b);connect(mind,a,'2025년 예산');connect(mind,b,'2026년 예산');connect(b,s,'원문 근거');
+  stage('청년 마음건강 지원 사업을 찾습니다.',[mind],[]);
+  stage('2025년과 2026년 예산을 함께 조회합니다.',[a,b],[0,1]);
+  stage('차액과 감소율을 계산하고 출처를 확인합니다.',[s],[2]);
+  const diff=a.amount-b.amount;
+  answer=`${fmt(diff)}천원 감소했습니다. 전년 대비 감소율은 ${(diff/a.amount*100).toFixed(2)}%입니다.`;
+  evidence=`${fmt(a.amount)} − ${fmt(b.amount)} = ${fmt(diff)}천원. 감소율 = 감소액 ÷ 2025년 예산 × 100. 근거: PDF ${b.pdf_page}쪽 / 인쇄 ${b.printed_page}쪽. 감소 원인은 이 계산으로 알 수 없습니다.`;
+ }else if(state.question==='breakdown'){
+  const b=budget(allowance,2026),expenses=outgoing(b.id,'HAS_EXPENSE'),items=expenses.flatMap(e=>outgoing(e.id,'HAS_LINE_ITEM'));
+  connect(allowance,b,'연도별 예산');expenses.forEach(e=>connect(b,e,'과목별 배정'));expenses.forEach(e=>outgoing(e.id,'HAS_LINE_ITEM').forEach(i=>connect(e,i,'산출내역')));
+  stage('청년수당의 2026년 사업 총액을 조회합니다.',[allowance,b],[0]);
+  stage('총액을 구성하는 예산과목을 펼칩니다.',expenses,expenses.map((_,i)=>i+1));
+  stage('과목별 산출내역을 확인해 합계를 검산합니다.',items,es.map((_,i)=>i).filter(i=>i>expenses.length));
+  answer=`총 ${fmt(b.amount)}천원 = `+expenses.map(e=>`${e.name} ${fmt(e.amount)}천원`).join(' + ')+'.';
+  evidence=items.map(i=>`${i.name}: ${fmt(i.amount)}천원 · PDF ${i.pdf_page}쪽`).join('<br>')+'<br>상위 총액과 하위 내역을 함께 합산하지 않습니다.';
+ }else if(state.question==='owner'){
+  const u=incoming(allowance.id,'HAS_PROJECT')[0],p=incoming(u.id,'HAS_UNIT')[0],d=incoming(p.id,'HAS_POLICY')[0],o=incoming(d.id,'HAS_DEPARTMENT')[0];
+  connect(o,d,'하위 부서');connect(d,p,'소관 정책');connect(p,u,'하위 단위사업');connect(u,allowance,'하위 세부사업');
+  stage('서울 청년수당 사업을 찾습니다.',[allowance],[]);
+  stage('상위 단위사업과 정책을 역방향으로 조회합니다.',[u,p],[3,2]);
+  stage('정책의 소관 부서와 상위 기관을 확인합니다.',[d,o],[1,0]);
+  answer=`서울 청년수당은 ${d.name} 소관이며, “${p.name}” 정책 아래 “${u.name}” 단위사업에 속합니다.`;
+  evidence=`사업: PDF ${allowance.pdf_page}쪽. 단위사업: PDF ${u.pdf_page}쪽. 부서·정책: PDF ${d.pdf_page}쪽. 소관은 직접 운영기관을 뜻하지 않습니다. 화살표는 문서 계층 방향이며 조회는 역방향으로 진행합니다.`;
+ }else{
+  const topic={id:'topic',name:'경제·재정 지원',label:'ProposedCategory'},pay={id:'pay',name:'수당 지급',label:'ProposedCategory'},interest={id:'interest',name:'이자 지원',label:'ProposedCategory'};
+  const a=outgoing(budget(allowance,2026).id,'HAS_EXPENSE').flatMap(e=>outgoing(e.id,'HAS_LINE_ITEM')).find(n=>n.name==='청년수당 지급');
+  const f=outgoing(budget(finance,2026).id,'HAS_EXPENSE').flatMap(e=>outgoing(e.id,'HAS_LINE_ITEM')).find(n=>n.name==='학자금 대출이자 지원');
+  connect(topic,allowance,'제안 분류',true);connect(topic,finance,'제안 분류',true);connect(allowance,pay,'지원방식 분류',true);connect(finance,interest,'지원방식 분류',true);connect(allowance,a,'산출내역 경로 요약');connect(finance,f,'산출내역 경로 요약');
+  stage('“경제·재정 지원”이라는 제안 분류에서 시작합니다.',[topic],[]);
+  stage('분류에 연결한 두 사업과 지원 방식을 찾습니다.',[allowance,finance,pay,interest],[0,1,2,3]);
+  stage('분류의 근거가 되는 원문 산출내역을 확인합니다.',[a,f],[4,5]);
+  answer='예시로 서울 청년수당(수당 지급)과 청년 미래투자 금융 지원(이자 지원)을 함께 찾습니다. 전체 재정 지원 사업을 망라한 결과는 아닙니다.';
+  evidence=`분류 관계는 제안입니다. 원문 근거: “${a.name}” PDF ${a.pdf_page}쪽, “${f.name}” PDF ${f.pdf_page}쪽. 실선의 ‘경로 요약’은 사업 → 예산 → 과목 → 산출내역 연결을 축약한 표시입니다.`;
+ }
+ return {nodes:ns,edges:es,steps,answer,evidence};
+}
+const typeNames={Project:'사업',BudgetAllocation:'연도별 예산',ExpenseAllocation:'과목별 배정',LineItem:'산출내역',Organization:'기관',Department:'부서',Policy:'정책',UnitProgram:'단위사업',Source:'원문 위치',ProposedCategory:'제안 분류'};
+function save(){window.openai?.setWidgetState?.({modelContent:{view:state.view,question:questions[state.view].find(q=>q[0]===state.question)?.[1],step:state.step+1},privateContent:state})?.catch(()=>{});}
+function render(){
+ model=build();state.step=Math.max(0,Math.min(state.step,model.steps.length-1));
+ const activeN=new Set(model.steps.slice(0,state.step+1).flatMap(s=>s.ids)),activeE=new Set(model.steps.slice(0,state.step+1).flatMap(s=>s.edges));
+ el('step').textContent=`${state.step+1} / ${model.steps.length} 단계`;
+ el('current').textContent=model.steps[state.step].text;
+ el('prev').disabled=state.step===0;el('next').disabled=state.step===model.steps.length-1;
+ const depths=new Map(model.nodes.map(n=>[n.id,0]));
+ for(let k=0;k<model.nodes.length;k++)for(const e of model.edges)depths.set(e.target,Math.max(depths.get(e.target),depths.get(e.source)+1));
+ const levels=Array.from(new Set(depths.values())).sort((a,b)=>a-b);
+ el('canvas').innerHTML='<svg class="kg-edge-layer" aria-hidden="true"></svg><div class="kg-grid">'+levels.map(d=>'<div class="kg-level">'+model.nodes.filter(n=>depths.get(n.id)===d).map(n=>`<button type="button" class="kg-node cursor-interaction ${activeN.has(n.id)?'kg-active':''}" data-node="${n.id}" aria-label="${safe(n.name)} 상세"><span class="text-small kg-type">${activeN.has(n.id)?'● ':''}${typeNames[n.label]||n.label}</span><span>${safe(n.label==='BudgetAllocation'?n.year+'년 예산':n.name)}</span>${n.amount!==undefined?`<span class="tabular-nums">${fmt(n.amount)}천원</span>`:''}</button>`).join('')+'</div>').join('')+'</div>';
+ el('answer').innerHTML=`<strong>${state.step===model.steps.length-1?'답변':'답변 구성 중'}</strong><span>${state.step===model.steps.length-1?safe(model.answer):'다음 단계에서 연결된 기록과 근거를 확인합니다.'}</span>`;
+ el('evidence').innerHTML=model.evidence;
+ el('canvas').querySelectorAll('[data-node]').forEach(b=>b.onclick=()=>{
+  el('canvas').querySelectorAll('.kg-selected').forEach(x=>x.classList.remove('kg-selected'));b.classList.add('kg-selected');
+  const n=model.nodes.find(n=>n.id===b.dataset.node);
+  el('current').textContent=`${typeNames[n.label]} · ${n.name}${n.pdf_page?' · PDF '+n.pdf_page+'쪽 / 인쇄 '+n.printed_page+'쪽':''}${n.label==='ProposedCategory'?' · 원문 사실과 구분한 제안':''}`;
+ });
+ drawEdges(activeE);
+}
+function drawEdges(activeE){
+ const c=el('canvas'),svg=c.querySelector('svg');if(!svg)return;
+ c.querySelectorAll('.kg-edge-label').forEach(x=>x.remove());
+ const rect=c.getBoundingClientRect();svg.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);svg.innerHTML='<defs><marker id="kg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--viz-series-1)"/></marker></defs>';
+ model.edges.forEach((e,i)=>{
+  const aa=c.querySelector(`[data-node="${e.source}"]`).getBoundingClientRect(),bb=c.querySelector(`[data-node="${e.target}"]`).getBoundingClientRect();
+  let x1=aa.left-rect.left+aa.width/2,y1=aa.bottom-rect.top,x2=bb.left-rect.left+bb.width/2,y2=bb.top-rect.top;
+  const sameRow=Math.abs(aa.top-bb.top)<10;
+  if(sameRow){x1=aa.right-rect.left;y1=aa.top-rect.top+aa.height/2;x2=bb.left-rect.left;y2=bb.top-rect.top+bb.height/2;}
+  const mid=(y1+y2)/2;
+  const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+  path.setAttribute('d',sameRow?`M${x1},${y1} L${x2},${y2}`:`M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`);
+  path.setAttribute('class',`kg-edge ${activeE.has(i)?'kg-active':''} ${e.semantic?'kg-semantic':''}`);if(activeE.has(i))path.setAttribute('marker-end','url(#kg-arrow)');svg.append(path);
+  const label=document.createElement('span');label.className='kg-edge-label text-small';label.style.left=((x1+x2)/2)+'px';label.style.top=((y1+y2)/2+(sameRow?-22:0))+'px';label.textContent=(activeE.has(i)?'● ':'')+e.label;c.append(label);
+ });
+}
+function setQuestions(){
+ const qs=questions[state.view];if(!qs.some(q=>q[0]===state.question))state.question=qs[0][0];
+ el('view').value=state.view;el('question').innerHTML=qs.map(q=>`<option value="${q[0]}">${q[1]}</option>`).join('');el('question').value=state.question;
+}
+el('view').onchange=()=>{state.view=el('view').value;state.step=0;setQuestions();render();save()};
+el('question').onchange=()=>{state.question=el('question').value;state.step=0;render();save()};
+el('prev').onclick=()=>{state.step--;render();save()};el('next').onclick=()=>{state.step++;render();save()};el('all').onclick=()=>{state.step=model.steps.length-1;render();save()};
+new ResizeObserver(()=>{if(model)drawEdges(new Set(model.steps.slice(0,state.step+1).flatMap(s=>s.edges)))}).observe(el('canvas'));
+window.addEventListener('openai:set_globals',e=>{const s=e.detail?.globals?.widgetState?.privateContent;if(s&&questions[s.view]){state={...state,...s};setQuestions();render()}});
+setQuestions();render();
+})();
+</script>
+</main></body></html>

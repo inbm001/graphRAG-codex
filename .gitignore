@@ -1,0 +1,13 @@
+.logs/
+tmp/
+.impeccable/
+.codex/
+.agents/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+*.pdf
